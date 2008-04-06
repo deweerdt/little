@@ -25,33 +25,12 @@
 
 #include "http.h"
 #include "little.h"
+#include "requests.h"
 
 static struct configuration config = {	.port = 8080,
 					.bind_address = "0.0.0.0",
 					.max_request_size = 16384,
-					.socket_timeout = 3.0 };
-
-static struct request **reqs;
-static void req_del(int fd)
-{
-	if (reqs[fd]->fs_fd > 0)
-		close(reqs[fd]->fs_fd);
-	close(reqs[fd]->net_fd);
-	free(reqs[fd]->request);
-	free(reqs[fd]->out_buf);
-	free(reqs[fd]);
-	reqs[fd] = NULL;
-}
-
-static void req_add(struct request *req)
-{
-	reqs[req->net_fd] = req;
-}
-
-static struct request *req_get_from_net_fd(const int fd)
-{
-	return reqs[fd];
-}
+					.socket_timeout = 3 };
 
 static time_t now;
 void *time_thread(void __attribute__((unused)) *arg)
@@ -63,17 +42,6 @@ void *time_thread(void __attribute__((unused)) *arg)
 	return NULL;
 }
 
-static void garbage_collect()
-{
-	unsigned int i;
-
-	for (i=0; i < ARRAY_SIZE(reqs); i++) {
-		if (reqs[i]
-		    && difftime(now, reqs[i]->last_accessed) > config.socket_timeout) {
-			req_del(reqs[i]->net_fd);
-		}
-	}
-}
 static const char *build_status_line(struct request *req, int *size)
 {
 	const char *ret = NULL;
@@ -123,6 +91,7 @@ static char *parse_url(struct request *req)
 		return NULL;
 	}
 
+	/* seems Ok, try to find an URL */
 	p = (char *)req->request + 4;
 	for (i = 0; i < req->request_size; i++) {
 		if (p[i] == '\r' || p[i] == '\n' || p[i] == ' ')
@@ -136,10 +105,11 @@ static char *parse_url(struct request *req)
 
 	memcpy(url, p, i);
 	url[i] = '\0';
+
 	return url;
 }
 
-static int do_fs_request(struct request *req, const char *path)
+static int open_local_file(struct request *req, const char *path)
 {
 
 	struct stat st;
@@ -148,7 +118,6 @@ static int do_fs_request(struct request *req, const char *path)
   	ret = stat(path, &st);
 	if (ret < 0) 
 		goto err;
-
 	if (S_ISDIR(st.st_mode)) {
 		req->http_code = Not_Found;
 		return 0;
@@ -240,7 +209,7 @@ static void process_net_receiving(struct request *req, int poll_fd)
 		if (!url)
 			return;
 
-		if (!do_fs_request(req, url)) {
+		if (!open_local_file(req, url)) {
 			free(url);
 			return;
 		}
@@ -374,9 +343,8 @@ int main()
 	int poll_fd;
 	pthread_t timethread;
 
-	reqs = calloc(1, sizeof(struct request *) * sysconf(_SC_OPEN_MAX));
-	if (!reqs) {
-		perror("Cannot create socket");
+	if (!req_init()) {
+		perror("Cannot init internal memory");
 		exit(1);
 	}
 
@@ -446,7 +414,7 @@ int main()
 
 		/* is it time to gargabe collect ? */
 		if (difftime(now, last_gc) > config.socket_timeout) {
-			garbage_collect();
+			req_garbage_collect(now, config.socket_timeout);
 			last_gc = now;
 		}
 

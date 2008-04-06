@@ -1,6 +1,11 @@
 #ifndef _LITTLE_H_
 #define _LITTLE_H_
 
+#include <stdint.h>
+#include <time.h>
+
+#include "http.h"
+
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof(a[0]))
 
 struct configuration {
@@ -13,7 +18,7 @@ struct configuration {
 	/** for socket or file IO, in bytes */
 	unsigned int buffer_size; 	
 	/** delay of inactivity before closing a socket */
-	double socket_timeout;
+	int socket_timeout;
 };
 
 enum req_state {
