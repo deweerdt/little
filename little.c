@@ -26,11 +26,6 @@
 #include "http.h"
 #include "little.h"
 
-void sigint_handler(int arg __attribute__((unused)))
-{
-	exit(0);
-}
-
 static struct configuration config = {	.port = 8080,
 					.bind_address = "0.0.0.0",
 					.max_request_size = 16384,
@@ -144,7 +139,7 @@ static char *parse_url(struct request *req)
 	return url;
 }
 
-static int do_fd_request(struct request *req, const char *path)
+static int do_fs_request(struct request *req, const char *path)
 {
 
 	struct stat st;
@@ -202,6 +197,170 @@ static int state_to(struct request *req, enum req_state state, int poll_fd)
 
 	req->state = state;
 	return 1;
+}
+
+void sigint_handler(int arg __attribute__((unused)))
+{
+	exit(0);
+}
+
+static void process_net_receiving(struct request *req, int poll_fd)
+{
+	int ret;
+	ret = read(req->net_fd, req->request + req->request_size, BUFSIZ);
+	if (ret < 0) {
+		perror("read");
+		req_del(req->net_fd);
+		return;
+	}
+	/* remote peer unexpectedly closed the connection */
+	if (ret <= 0) {
+		req_del(req->net_fd);
+		return;
+	}
+	req->request_size += ret;
+
+	/* is request too long ? */
+	if (req->request_size > config.max_request_size) {
+		req->http_code = Bad_Request;
+		if (!state_to(req, NET_SENDING_STATUS, poll_fd)) {
+			req_del(req->net_fd);
+		}
+		return;
+	}
+	/* is that a full request, if yes try to parse it */
+	if (req->request_size > CRLF_LEN
+	    && !memcmp(&req->request[req->request_size-CRLF_LEN], CRLF, CRLF_LEN)) {
+		char *url;
+
+		if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+			return;
+
+		url = parse_url(req);
+		if (!url)
+			return;
+
+		if (!do_fs_request(req, url)) {
+			free(url);
+			return;
+		}
+		free(url);
+
+
+		req->out_buf_size = 0;
+		req->out_buf = malloc(BUFSIZ);
+		if (!req->out_buf) {
+			req->http_code = Internal_Server_Error;
+			return;
+		}
+	} else {
+		/* not a request, continue */
+		req->request = realloc(req->request, req->request_size + BUFSIZ);
+		if (!req->request) {
+			perror("realloc");
+			req_del(req->net_fd);
+			return;
+		}
+	}
+}
+static void process_net_sending_status(struct request *req, int poll_fd)
+{
+	int size, ret;
+	const char *status;
+	status = build_status_line(req, &size);
+	ret = write(req->net_fd, status, size);
+	if (ret < 0) {
+		perror("write");
+		req_del(req->net_fd);
+		return;
+	}
+	if (req->http_code != OK) {
+		req_del(req->net_fd);
+		return;
+	}
+
+	if (!state_to(req, NET_SENDING, poll_fd))
+		req_del(req->net_fd);
+
+}
+static void process_net_sending(struct request *req, int poll_fd)
+{
+	int ret;
+	if (req->fs_fd) {
+		ret = read(req->fs_fd, req->out_buf, BUFSIZ);
+		if (ret < 0) {
+			req->http_code = Internal_Server_Error;
+			if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+				req_del(req->net_fd);
+			return;
+		}
+		req->out_buf_size += ret;
+	}
+
+	/* File was sent, no more to send => close descriptor */
+	if (!ret) {
+		req_del(req->net_fd);
+		return;
+	}
+
+	ret = write(req->net_fd, req->out_buf, req->out_buf_size);
+	if (ret > 0) {
+		req->out_buf_size = 0;
+	} else {
+		if (ret < 0)
+			perror("write");
+		req_del(req->net_fd);
+	}
+}
+
+static void process_new_client(int server, int poll_fd)
+{
+	struct sockaddr_in client_addr;
+	size_t addrlen;
+	int flags, client;
+	struct request *req;
+	static struct epoll_event ev;
+
+	addrlen = sizeof(client_addr);
+	client = accept(server, (struct sockaddr *)&client_addr,
+			&addrlen);
+	if (client < 0){
+		perror("accept");
+		return;
+	}
+
+	if ((flags = fcntl(client, F_GETFL, 0)) < 0) {
+		perror("fcntl 1");
+		return;
+	}
+
+
+	if (fcntl(client, F_SETFL, flags | O_NONBLOCK) < 0) {
+		perror("fcntl 2");
+		return;
+	}
+
+	ev.events = EPOLLIN;
+	ev.data.fd = client;
+	if (epoll_ctl(poll_fd, EPOLL_CTL_ADD, client, &ev) < 0) {
+		perror("epoll_ctrl add");
+		return;
+	}
+
+	req = malloc(sizeof(struct request));
+	if (!req) {
+		perror("malloc");
+		return;
+	}
+	req->net_fd = client;
+	req->fs_fd = 0;
+	req->state = NET_RECEIVING;
+	req->request = malloc(BUFSIZ);
+	req->request_size = 0;
+	req->out_buf = NULL;
+	req->out_buf_size = 0;
+	req->last_accessed = now;
+	req_add(req);
 }
 
 int main()
@@ -285,6 +444,7 @@ int main()
 
 		nfds = epoll_wait(poll_fd, events, maxevents, config.socket_timeout * 1000);
 
+		/* is it time to gargabe collect ? */
 		if (difftime(now, last_gc) > config.socket_timeout) {
 			garbage_collect();
 			last_gc = now;
@@ -292,51 +452,7 @@ int main()
 
 		for (n = 0; n < nfds; ++n) {
 			if (events[n].data.fd == server) {
-				struct sockaddr_in client_addr;
-				size_t addrlen;
-				int flags, client;
-				struct request *req;
-
-				addrlen = sizeof(client_addr);
-				client = accept(server, (struct sockaddr *)&client_addr,
-						&addrlen);
-				if (client < 0){
-					perror("accept");
-					continue;
-				}
-
-				if ((flags = fcntl(client, F_GETFL, 0)) < 0) {
-					perror("fcntl 1");
-					continue;
-				}
-
-
-				if (fcntl(client, F_SETFL, flags | O_NONBLOCK) < 0) {
-					perror("fcntl 2");
-					continue;
-				}
-
-				ev.events = EPOLLIN;
-				ev.data.fd = client;
-				if (epoll_ctl(poll_fd, EPOLL_CTL_ADD, client, &ev) < 0) {
-					perror("epoll_ctrl add");
-					continue;
-				}
-				
-				req = malloc(sizeof(struct request));
-				if (!req) {
-					perror("malloc");
-					continue;
-				}
-				req->net_fd = client;
-				req->fs_fd = 0;
-				req->state = NET_RECEIVING;
-				req->request = malloc(BUFSIZ);
-				req->request_size = 0;
-				req->out_buf = NULL;
-				req->out_buf_size = 0;
-				req->last_accessed = now;
-				req_add(req);
+				process_new_client(server, poll_fd);
 			} else {
 				struct request *req;
 
@@ -353,110 +469,13 @@ int main()
 
 				switch(req->state) {
 					case NET_RECEIVING:
-						ret = read(req->net_fd, req->request + req->request_size, BUFSIZ);
-						if (ret < 0) {
-							perror("read");
-							req_del(req->net_fd);
-							continue;
-						}
-						/* remote peer unexpectedly closed the connection */
-						if (ret <= 0) {
-							req_del(req->net_fd);
-							continue;
-						}
-						req->request_size += ret;
-
-						/* is request too long ? */
-						if (req->request_size > config.max_request_size) {
-							req->http_code = Bad_Request;
-							if (!state_to(req, NET_SENDING_STATUS, poll_fd)) {
-								req_del(req->net_fd);
-							}
-							continue;
-						}
-						/* is that a full request, if yes try to parse it */
-						if (req->request_size > CRLF_LEN
-						    && !memcmp(&req->request[req->request_size-CRLF_LEN], CRLF, CRLF_LEN)) {
-
-							char *url;
-
-							if (!state_to(req, NET_SENDING_STATUS, poll_fd))
-								continue;
-
-							url = parse_url(req);
-							if (!url)
-								continue;
-							
-							if (!do_fd_request(req, url)) {
-								free(url);
-								continue;
-							}
-							free(url);
-
-
-							req->out_buf_size = 0;
-							req->out_buf = malloc(BUFSIZ);
-							if (!req->out_buf) {
-								req->http_code = Internal_Server_Error;
-								continue;
-							}
-						} else {
-							/* not a request, continue */
-							req->request = realloc(req->request, req->request_size + BUFSIZ);
-							if (!req->request) {
-								perror("realloc");
-								req_del(req->net_fd);
-								continue;
-							}
-						}
+						process_net_receiving(req, poll_fd);
 						break;
 					case NET_SENDING_STATUS:
-						do {
-							int size;
-							const char *status;
-							status = build_status_line(req, &size);
-							ret = write(req->net_fd, status, size);
-							if (ret < 0) {
-								perror("write");
-								req_del(req->net_fd);
-								continue;
-							}
-							if (req->http_code != OK) {
-								req_del(req->net_fd);
-								continue;
-							}
-
-							if (!state_to(req, NET_SENDING, poll_fd))
-								req_del(req->net_fd);
-
-						} while(0);
+						process_net_sending_status(req, poll_fd);
 						break;
 					case NET_SENDING:
-						if (req->fs_fd) {
-							ret = read(req->fs_fd, req->out_buf, BUFSIZ);
-							if (ret < 0) {
-								req->http_code = Internal_Server_Error;
-								if (!state_to(req, NET_SENDING_STATUS, poll_fd))
-									req_del(req->net_fd);
-								continue;
-							}
-							req->out_buf_size += ret;
-						}
-
-						/* File was sent, no more to send => close descriptor */
-						if (!ret) {
-							req_del(req->net_fd);
-							continue;
-						}
-
-						ret = write(req->net_fd, req->out_buf, req->out_buf_size);
-						if (ret > 0) {
-							req->out_buf_size = 0;
-						} else {
-							if (ret < 0)
-								perror("write");
-							req_del(req->net_fd);
-						}
+						process_net_sending(req, poll_fd);
 						break;
 					default:
 						assert(0);
