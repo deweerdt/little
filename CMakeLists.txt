@@ -1,3 +1,7 @@
+  ENABLE_TESTING()
+ADD_TEST(FunkyUrls tests/funky_urls)
+ADD_TEST(HugeReq tests/huge_req)
+ADD_TEST(Nominal tests/typical_ab)
 ADD_EXECUTABLE(little little.c)
 
 OPTION(PROFILE ON)
@@ -6,4 +10,5 @@ IF(PROFILE)
 	TARGET_LINK_LIBRARIES(little gcov)	
 ENDIF(PROFILE)
 
+TARGET_LINK_LIBRARIES(little pthread)
 ADD_DEFINITIONS(-Wall -Wextra -g -O0 ${PROF_OPT})
