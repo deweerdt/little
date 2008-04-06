@@ -1,0 +1,18 @@
+#!/usr/bin/perl
+
+use IO::Socket; 
+@urls = ( "Whaza\n",
+	  "Wha\n",
+	  "Wh\r\n",
+	  "Wh\r\n\r\n",
+	  "HEAD / HTTP/1.0\r\n\r\n",
+	  "POST / HTTP/1.0\r\nmaklzjemazjelkmajze\r\n",
+);
+foreach (@urls) {
+	my $sock = new IO::Socket::INET (PeerAddr => 'localhost',
+				 PeerPort => '8080',
+				 Proto => 'tcp', );
+			 die "Could not create socket: $!\n" unless $sock;
+	print $sock $_;
+	close($sock);
+}

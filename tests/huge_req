@@ -1,0 +1,6 @@
+# 1
+wget -O /dev/null --header="X-H:$(for i in $(seq 1 15000); do echo -n 'a'; done)" http://localhost:8080
+
+wget -t 1 -O /dev/null --header="X-H:$(for i in $(seq 1 20000); do echo -n 'a'; done)" http://localhost:8080
+# This one should fail (too big)
+[ $? -eq 1 ] && true
