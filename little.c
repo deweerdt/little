@@ -1,6 +1,7 @@
 #define __USE_GNU
 
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -22,10 +23,8 @@
 
 #include <pthread.h>
 
-#define CRLF "\r\n\r\n"
-#define CRLF_LEN 4
-
-//#define BUFSIZ 4096 * 8
+#define CRLF "\r\n"
+#define CRLF_LEN 2
 
 enum http_response_code {
 	OK = 200,
@@ -45,16 +44,18 @@ enum http_response_code {
 	Service_Unavailable = 503,
 };
 
-static const char STR_200[] = "HTTP/1.0 200 OK" CRLF;
-static const int STR_200_LEN = 21;
+static const char STR_200[] = "HTTP/1.0 200 OK" CRLF CRLF;
+static const int STR_200_LEN = 19;
 static const char STR_400[] = "HTTP/1.0 400 Bad Request" CRLF CRLF;
-static const int STR_400_LEN = 32;
+static const int STR_400_LEN = 28;
+static const char STR_403[] = "HTTP/1.0 403 Forbidden" CRLF CRLF;
+static const int STR_403_LEN = 26;
 static const char STR_404[] = "HTTP/1.0 404 Not Found" CRLF CRLF;
-static const int STR_404_LEN = 30;
+static const int STR_404_LEN = 26;
 static const char STR_500[] = "HTTP/1.0 500 Internal Server Error" CRLF CRLF;
-static const int STR_500_LEN = 42;
+static const int STR_500_LEN = 38;
 static const char STR_501[] = "HTTP/1.0 501 Not Implemented" CRLF CRLF;
-static const int STR_501_LEN = 36;
+static const int STR_501_LEN = 32;
 
 enum req_state {
 	NET_RECEIVING,
@@ -93,17 +94,20 @@ static struct configuration config = {	.port = 8080,
 static struct request **reqs;
 static void req_del(int fd)
 {
-	close(reqs[fd]->fs_fd);
+	if (reqs[fd]->fs_fd > 0)
+		close(reqs[fd]->fs_fd);
 	close(reqs[fd]->net_fd);
 	free(reqs[fd]->request);
 	free(reqs[fd]->out_buf);
 	free(reqs[fd]);
 	reqs[fd] = NULL;
 }
+
 static void req_add(struct request *req)
 {
 	reqs[req->net_fd] = req;
 }
+
 static struct request *req_get_from_net_fd(const int fd)
 {
 	return reqs[fd];
@@ -138,16 +142,20 @@ static const char *build_status_line(struct request *req, int *size)
 			ret = STR_200;
 			*size = STR_200_LEN;
 			break;
+		case Bad_Request:
+			ret = STR_400;
+			*size = STR_400_LEN;
+			break;
 		case Not_Found:
-			ret = strdup(STR_404);
+			ret = STR_404;
 			*size = STR_404_LEN;
 			break;
 		case Internal_Server_Error:
-			ret = strdup(STR_500);
+			ret = STR_500;
 			*size = STR_500_LEN;
 			break;
 		case Not_Implemented:
-			ret = strdup(STR_501);
+			ret = STR_501;
 			*size = STR_501_LEN;
 			break;
 		default:
@@ -194,24 +202,41 @@ static char *parse_url(struct request *req)
 static int do_fd_request(struct request *req, const char *path)
 {
 
-	req->fs_fd = open(path, O_RDONLY);
-	if (req->fs_fd < 0) {
-		switch (errno) {
-			case ENOENT:
-				req->http_code = Not_Found;
-				return 0;
-			default:
-				req->http_code = Internal_Server_Error;
-				return 0;
-		}
+	struct stat st;
+	int ret;
+
+  	ret = stat(path, &st);
+	if (ret < 0) 
+		goto err;
+
+	if (S_ISDIR(st.st_mode)) {
+		req->http_code = Not_Found;
+		return 0;
 	}
 
+	req->fs_fd = open(path, O_RDONLY|O_NONBLOCK);
+	if (req->fs_fd < 0)
+		goto err;
+
 	return 1;
+err:
+	switch (errno) {
+		case ENOENT:
+			req->http_code = Not_Found;
+			break;
+		case EPERM:
+			req->http_code = Forbidden;
+			break;
+		default:
+			req->http_code = Internal_Server_Error;
+	}
+	return 0;
 }
 
-static int __attribute__((warn_unused_result)) state_to(struct request *req, enum req_state state, int poll_fd)
+ __attribute__((warn_unused_result))
+static int state_to(struct request *req, enum req_state state, int poll_fd)
 {
-	struct epoll_event ev;
+	static struct epoll_event ev;
 	
 	switch(state) {
 		case NET_SENDING:
@@ -253,8 +278,9 @@ int main()
 	int ret, optval;
 	int server;
 	struct sockaddr_in server_addr;
-	struct epoll_event ev, *events;
-	int maxevents = 64;
+	static struct epoll_event ev;
+       	struct epoll_event *events;
+	int maxevents = 512;
 	int poll_fd;
 	pthread_t timethread;
 
@@ -264,8 +290,10 @@ int main()
 		exit(1);
 	}
 
-	pthread_create(&timethread, NULL, time_thread, NULL);
 	signal(SIGINT, sigint_handler);
+	signal(SIGPIPE, SIG_IGN);
+
+	pthread_create(&timethread, NULL, time_thread, NULL);
 
 	server = socket(PF_INET, SOCK_STREAM, IPPROTO_IP);
 	if (server < 0) {
@@ -308,7 +336,6 @@ int main()
 		exit(1);
 	}
 
-	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN | EPOLLPRI | EPOLLERR | EPOLLHUP;
 	ev.data.fd = server;
 	ret = epoll_ctl(poll_fd, EPOLL_CTL_ADD, server, &ev);
@@ -320,10 +347,13 @@ int main()
 	do {
 		int n;
 		int nfds;
+		time_t last_gc = now;
 
 		nfds = epoll_wait(poll_fd, events, maxevents, config.socket_timeout * 1000);
-		if (nfds == 0) {
+
+		if (difftime(now, last_gc) > config.socket_timeout) {
 			garbage_collect();
+			last_gc = now;
 		}
 
 		for (n = 0; n < nfds; ++n) {
@@ -376,15 +406,14 @@ int main()
 			} else {
 				struct request *req;
 
+				req = req_get_from_net_fd(events[n].data.fd);
+				assert(req);
+
 				/* check the sanity of the file descriptor */
 				if (events[n].events & EPOLLERR || events[n].events & EPOLLHUP) {
-					assert(0);
 					req_del(req->net_fd);
 					continue;
 				}
-
-				req = req_get_from_net_fd(events[n].data.fd);
-				assert(req);
 
 				req->last_accessed = now;
 
@@ -405,8 +434,10 @@ int main()
 
 						/* is request too long ? */
 						if (req->request_size > config.max_request_size) {
-							fprintf(stderr, "Request is too long\n");
-							req_del(req->net_fd);
+							req->http_code = Bad_Request;
+							if (!state_to(req, NET_SENDING_STATUS, poll_fd)) {
+								req_del(req->net_fd);
+							}
 							continue;
 						}
 						/* is that a full request, if yes try to parse it */
@@ -415,16 +446,18 @@ int main()
 
 							char *url;
 
+							if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+								continue;
+
 							url = parse_url(req);
 							if (!url)
 								continue;
 							
-							if (!do_fd_request(req, url))
+							if (!do_fd_request(req, url)) {
+								free(url);
 								continue;
+							}
 							free(url);
-
-							if (!state_to(req, NET_SENDING_STATUS, poll_fd))
-								continue;
 
 
 							req->out_buf_size = 0;
@@ -452,9 +485,12 @@ int main()
 							if (ret < 0) {
 								perror("write");
 								req_del(req->net_fd);
+								continue;
 							}
-							if (req->http_code != OK) 
+							if (req->http_code != OK) {
 								req_del(req->net_fd);
+								continue;
+							}
 
 							if (!state_to(req, NET_SENDING, poll_fd))
 								req_del(req->net_fd);
@@ -464,8 +500,16 @@ int main()
 					case NET_SENDING:
 						if (req->fs_fd) {
 							ret = read(req->fs_fd, req->out_buf, BUFSIZ);
+							if (ret < 0) {
+								req->http_code = Internal_Server_Error;
+								if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+									req_del(req->net_fd);
+								continue;
+							}
 							req->out_buf_size += ret;
 						}
+
+						/* File was sent, no more to send => close descriptor */
 						if (!ret) {
 							req_del(req->net_fd);
 							continue;

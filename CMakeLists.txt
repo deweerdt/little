@@ -2,6 +2,7 @@
 ADD_TEST(FunkyUrls tests/funky_urls)
 ADD_TEST(HugeReq tests/huge_req)
 ADD_TEST(Nominal tests/typical_ab)
+ADD_TEST(HugeFile tests/huge_ab)
 ADD_EXECUTABLE(little little.c)
 
 OPTION(PROFILE ON)
