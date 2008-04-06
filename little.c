@@ -23,74 +23,19 @@
 
 #include <pthread.h>
 
-#define CRLF "\r\n"
-#define CRLF_LEN 2
+#include "http.h"
+#include "little.h"
 
-enum http_response_code {
-	OK = 200,
-	Created = 201,
-	Accepted = 202,
-	No_Content = 204,
-	Moved_Permanently = 301,
-	Moved_Temporarily = 302,
-	Not_Modified = 304,
-	Bad_Request = 400,
-	Unauthorized = 401,
-	Forbidden = 403,
-	Not_Found = 404,
-	Internal_Server_Error = 500,
-	Not_Implemented = 501,
-	Bad_Gateway = 502,
-	Service_Unavailable = 503,
-};
-
-static const char STR_200[] = "HTTP/1.0 200 OK" CRLF CRLF;
-static const int STR_200_LEN = 19;
-static const char STR_400[] = "HTTP/1.0 400 Bad Request" CRLF CRLF;
-static const int STR_400_LEN = 28;
-static const char STR_403[] = "HTTP/1.0 403 Forbidden" CRLF CRLF;
-static const int STR_403_LEN = 26;
-static const char STR_404[] = "HTTP/1.0 404 Not Found" CRLF CRLF;
-static const int STR_404_LEN = 26;
-static const char STR_500[] = "HTTP/1.0 500 Internal Server Error" CRLF CRLF;
-static const int STR_500_LEN = 38;
-static const char STR_501[] = "HTTP/1.0 501 Not Implemented" CRLF CRLF;
-static const int STR_501_LEN = 32;
-
-enum req_state {
-	NET_RECEIVING,
-	NET_SENDING,
-	NET_SENDING_STATUS,
-	FS_RECEIVING,
-};
-struct request {
-	int net_fd;
-	int fs_fd;
-	void *out_buf;
-	unsigned int out_buf_size;
-	uint8_t *request;
-	unsigned int request_size;
-	enum req_state state;
-	time_t last_accessed; 
-	enum http_response_code http_code;
-};
 void sigint_handler(int arg __attribute__((unused)))
 {
 	exit(0);
 }
 
-struct configuration {
-	unsigned short port;
-	char bind_address[17]; 		/* dotted IP address */
-	unsigned int max_request_size; 	/* in bytes */
-	double socket_timeout; 	/* in seconds */
-};
 static struct configuration config = {	.port = 8080,
 					.bind_address = "0.0.0.0",
 					.max_request_size = 16384,
 					.socket_timeout = 3.0 };
 
-#define ARRAY_SIZE(a) (sizeof(a)/sizeof(a[0]))
 static struct request **reqs;
 static void req_del(int fd)
 {
@@ -250,20 +195,6 @@ static int state_to(struct request *req, enum req_state state, int poll_fd)
 				return 0;
 			}
 			break;
-		case FS_RECEIVING:
-			ev.events = 0;
-			ev.data.fd = req->net_fd;
-			if (epoll_ctl(poll_fd, EPOLL_CTL_MOD, req->net_fd, &ev) < 0) {
-				req->http_code = Internal_Server_Error;
-				return 0;
-			}
-			ev.events = EPOLLIN;
-			ev.data.fd = req->fs_fd;
-			if (epoll_ctl(poll_fd, EPOLL_CTL_ADD, req->fs_fd, &ev) < 0) {
-				req->http_code = Internal_Server_Error;
-				return 0;
-			}
-			break;
 		default:
 			fprintf(stderr, "Unknown state %d\n", state);
 			assert(0);
@@ -293,7 +224,11 @@ int main()
 	signal(SIGINT, sigint_handler);
 	signal(SIGPIPE, SIG_IGN);
 
-	pthread_create(&timethread, NULL, time_thread, NULL);
+	ret = pthread_create(&timethread, NULL, time_thread, NULL);
+	if (ret) {
+		perror("pthread_create");
+		exit(1);
+	}
 
 	server = socket(PF_INET, SOCK_STREAM, IPPROTO_IP);
 	if (server < 0) {
@@ -304,7 +239,6 @@ int main()
 	server_addr.sin_port = htons(config.port);
 	server_addr.sin_addr.s_addr = inet_addr(config.bind_address);
 
-	//setsockopt(3, SOL_SOCKET, SO_LINGER, {onoff=1, linger=0}, 8) = 0
 	optval = 1;
 	ret = setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 	if (ret < 0) {
