@@ -124,7 +124,14 @@ static int open_local_file(struct request *req, const char *path)
 	int ret;
 	const char *magic_str;
 
-  	req->fs_fd = open(path, O_RDONLY|O_NONBLOCK);
+  	/* notice the dup here, for some reason magic_descriptor
+	 * closes the file at the end of the process */
+
+	/* magic failed for some reason, this is non fatal, proceed anyway */
+	magic_str = magic_file(magic_cookie, path);
+	
+
+	req->fs_fd = open(path, O_RDONLY);
 	req->fs_fd_offset = 0;
 	if (req->fs_fd < 0)
 		goto err;
@@ -137,22 +144,16 @@ static int open_local_file(struct request *req, const char *path)
 		return 0;
 	}
 
-	/* notice the dup here, for some reason magic_descriptor
-	 * closes the file at the end of the process */
-	magic_str = magic_descriptor(magic_cookie, dup(req->fs_fd));
-	
-	/* magic failed for some reason, this is non fatal, proceed anyway */
-	if (!magic_str)
-		return 1;
-
-	/* this is plain text, return the file as-is */
-	if (strncmp("text", magic_str, 4)) {
-		req->is_binary = 1;
+	/* this is not plain text, base64 the file */
+	if (magic_str && strncmp("text", magic_str, 4)) {
 		BIO *b64;
 
+		req->is_binary = 1;
+
 		b64 = BIO_new(BIO_f_base64());
-		req->bio_fd = BIO_new_fp(fdopen(req->net_fd, "r"), BIO_NOCLOSE);
+		req->bio_fd = BIO_new_socket(req->net_fd, BIO_NOCLOSE);
 		req->bio_fd = BIO_push(b64, req->bio_fd);
+		//BIO_set_mem_eof_return(req->bio_fd, 0);
 	}
 
 	return 1;
@@ -291,8 +292,9 @@ static void process_net_sending(struct request *req, int poll_fd)
 			return;
 		}
 	} else {
-		char outbuf[BUFSIZ];
-		ret = read(req->fs_fd, outbuf, sizeof(outbuf));
+		char out_buf[BUFSIZ];
+
+		ret = read(req->fs_fd, out_buf, sizeof(out_buf));
 		if (ret < 0) {
 			req->http_code = Internal_Server_Error;
 			if (!state_to(req, NET_SENDING_STATUS, poll_fd))
@@ -306,16 +308,10 @@ static void process_net_sending(struct request *req, int poll_fd)
 			return;
 		}
 
-		ret = BIO_write(req->bio_fd, outbuf, ret);
-		if (ret < 0) {
-			if (BIO_should_retry(req->bio_fd)) {
-				return;
-			} else {
-				req_del(req->net_fd);
-				return;
-			}
+		ret = BIO_write(req->bio_fd, out_buf, ret);
+		if (ret <= 0 ) {
+			req_del(req->net_fd);
 		}
-		BIO_flush(req->bio_fd);
 	}
 	return;
 }
