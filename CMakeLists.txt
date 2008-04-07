@@ -11,5 +11,5 @@ IF(PROFILE)
 	TARGET_LINK_LIBRARIES(little gcov)	
 ENDIF(PROFILE)
 
-TARGET_LINK_LIBRARIES(little pthread)
-ADD_DEFINITIONS(-Wall -Wextra -g -Os ${PROF_OPT})
+TARGET_LINK_LIBRARIES(little pthread magic ssl)
+ADD_DEFINITIONS(-Wall -Wextra -g -O0 ${PROF_OPT})

@@ -21,8 +21,12 @@
 #include <errno.h>
 
 #include <assert.h>
-
 #include <pthread.h>
+
+#include <magic.h>
+
+#include <openssl/bio.h>
+#include <openssl/evp.h>
 
 #include "http.h"
 #include "little.h"
@@ -34,6 +38,8 @@ static struct configuration config = {	.port = 8080,
 					.socket_timeout = 3 };
 
 static time_t now;
+static magic_t magic_cookie;
+
 void *time_thread(void __attribute__((unused)) *arg)
 {
 	do {
@@ -110,13 +116,20 @@ static char *parse_url(struct request *req)
 	return url;
 }
 
+ __attribute__((warn_unused_result))
 static int open_local_file(struct request *req, const char *path)
 {
 
 	struct stat st;
 	int ret;
+	const char *magic_str;
 
-  	ret = stat(path, &st);
+  	req->fs_fd = open(path, O_RDONLY|O_NONBLOCK);
+	req->fs_fd_offset = 0;
+	if (req->fs_fd < 0)
+		goto err;
+
+	ret = fstat(req->fs_fd, &st);
 	if (ret < 0) 
 		goto err;
 	if (S_ISDIR(st.st_mode)) {
@@ -124,10 +137,23 @@ static int open_local_file(struct request *req, const char *path)
 		return 0;
 	}
 
-	req->fs_fd = open(path, O_RDONLY|O_NONBLOCK);
-	req->fs_fd_offset = 0;
-	if (req->fs_fd < 0)
-		goto err;
+	/* notice the dup here, for some reason magic_descriptor
+	 * closes the file at the end of the process */
+	magic_str = magic_descriptor(magic_cookie, dup(req->fs_fd));
+	
+	/* magic failed for some reason, this is non fatal, proceed anyway */
+	if (!magic_str)
+		return 1;
+
+	/* this is plain text, return the file as-is */
+	if (strncmp("text", magic_str, 4)) {
+		req->is_binary = 1;
+		BIO *b64;
+
+		b64 = BIO_new(BIO_f_base64());
+		req->bio_fd = BIO_new_fp(fdopen(req->net_fd, "r"), BIO_NOCLOSE);
+		req->bio_fd = BIO_push(b64, req->bio_fd);
+	}
 
 	return 1;
 err:
@@ -216,14 +242,6 @@ static void process_net_receiving(struct request *req, int poll_fd)
 			return;
 		}
 		free(url);
-
-
-		req->out_buf_size = 0;
-		req->out_buf = malloc(BUFSIZ);
-		if (!req->out_buf) {
-			req->http_code = Internal_Server_Error;
-			return;
-		}
 	} else {
 		/* not a request, continue */
 		req->request = realloc(req->request, req->request_size + BUFSIZ);
@@ -258,18 +276,46 @@ static void process_net_sending(struct request *req, int poll_fd)
 {
 	int ret;
 
-	ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
-	if (ret < 0) {
-		req->http_code = Internal_Server_Error;
-		if (!state_to(req, NET_SENDING_STATUS, poll_fd))
-			req_del(req->net_fd);
-		return;
-	}
+	if (!req->is_binary) {
+		ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
+		if (ret < 0) {
+			req->http_code = Internal_Server_Error;
+			if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+				req_del(req->net_fd);
+			return;
+		}
 
-	/* File was sent, no more to send => close descriptor */
-	if (!ret) {
-		req_del(req->net_fd);
-		return;
+		/* File was sent, no more to send => close descriptor */
+		if (!ret) {
+			req_del(req->net_fd);
+			return;
+		}
+	} else {
+		char outbuf[BUFSIZ];
+		ret = read(req->fs_fd, outbuf, sizeof(outbuf));
+		if (ret < 0) {
+			req->http_code = Internal_Server_Error;
+			if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+				req_del(req->net_fd);
+			return;
+		}
+
+		/* File was sent, no more to send => close descriptor */
+		if (!ret) {
+			req_del(req->net_fd);
+			return;
+		}
+
+		ret = BIO_write(req->bio_fd, outbuf, ret);
+		if (ret < 0) {
+			if (BIO_should_retry(req->bio_fd)) {
+				return;
+			} else {
+				req_del(req->net_fd);
+				return;
+			}
+		}
+		BIO_flush(req->bio_fd);
 	}
 	return;
 }
@@ -318,9 +364,8 @@ static void process_new_client(int server, int poll_fd)
 	req->state = NET_RECEIVING;
 	req->request = malloc(BUFSIZ);
 	req->request_size = 0;
-	req->out_buf = NULL;
-	req->out_buf_size = 0;
 	req->last_accessed = now;
+	req->is_binary = 0;
 	req_add(req);
 }
 
@@ -338,6 +383,17 @@ int main()
 	if (!req_init()) {
 		perror("Cannot init internal memory");
 		exit(1);
+	}
+
+	magic_cookie = magic_open(MAGIC_MIME_TYPE);
+	if (!magic_cookie) {
+		perror("Cannot init magic cookie");
+		exit(0);
+	}
+	ret = magic_load(magic_cookie, NULL);
+	if (ret < 0) {
+		perror("Cannot init magic database");
+		exit(0);
 	}
 
 	signal(SIGINT, sigint_handler);

@@ -3,18 +3,19 @@
 
 #include <sys/types.h>
 #include <stdint.h>
+#include <openssl/bio.h>
 
 struct request {
 	int net_fd;
 	int fs_fd;
 	off_t fs_fd_offset;
-	void *out_buf;
-	unsigned int out_buf_size;
 	uint8_t *request;
 	unsigned int request_size;
 	enum req_state state;
 	time_t last_accessed; 
 	enum http_response_code http_code;
+	int is_binary;
+	BIO *bio_fd;
 };
 
 int req_init();

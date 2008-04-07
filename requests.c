@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <openssl/bio.h>
+
 static struct request **reqs;
 
 int req_init()
@@ -13,11 +15,14 @@ int req_init()
 
 void req_del(int fd)
 {
+	if (reqs[fd]->is_binary) {
+		BIO_free_all(reqs[fd]->bio_fd);
+
+	}
 	if (reqs[fd]->fs_fd > 0)
 		close(reqs[fd]->fs_fd);
 	close(reqs[fd]->net_fd);
 	free(reqs[fd]->request);
-	free(reqs[fd]->out_buf);
 	free(reqs[fd]);
 	reqs[fd] = NULL;
 }
