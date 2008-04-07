@@ -124,10 +124,10 @@ static int open_local_file(struct request *req, const char *path)
 	int ret;
 	const char *magic_str;
 
-  	/* notice the dup here, for some reason magic_descriptor
-	 * closes the file at the end of the process */
-
-	/* magic failed for some reason, this is non fatal, proceed anyway */
+	/*
+	 * if magic failed for some reason, this is non fatal, proceed
+	 * anyway
+	 */ 
 	magic_str = magic_file(magic_cookie, path);
 	
 
