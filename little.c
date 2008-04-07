@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 
 #include <sys/epoll.h>
+#include <sys/sendfile.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -124,6 +125,7 @@ static int open_local_file(struct request *req, const char *path)
 	}
 
 	req->fs_fd = open(path, O_RDONLY|O_NONBLOCK);
+	req->fs_fd_offset = 0;
 	if (req->fs_fd < 0)
 		goto err;
 
@@ -255,15 +257,13 @@ static void process_net_sending_status(struct request *req, int poll_fd)
 static void process_net_sending(struct request *req, int poll_fd)
 {
 	int ret;
-	if (req->fs_fd) {
-		ret = read(req->fs_fd, req->out_buf, BUFSIZ);
-		if (ret < 0) {
-			req->http_code = Internal_Server_Error;
-			if (!state_to(req, NET_SENDING_STATUS, poll_fd))
-				req_del(req->net_fd);
-			return;
-		}
-		req->out_buf_size += ret;
+
+	ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
+	if (ret < 0) {
+		req->http_code = Internal_Server_Error;
+		if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+			req_del(req->net_fd);
+		return;
 	}
 
 	/* File was sent, no more to send => close descriptor */
@@ -271,15 +271,7 @@ static void process_net_sending(struct request *req, int poll_fd)
 		req_del(req->net_fd);
 		return;
 	}
-
-	ret = write(req->net_fd, req->out_buf, req->out_buf_size);
-	if (ret > 0) {
-		req->out_buf_size = 0;
-	} else {
-		if (ret < 0)
-			perror("write");
-		req_del(req->net_fd);
-	}
+	return;
 }
 
 static void process_new_client(int server, int poll_fd)

@@ -30,16 +30,4 @@ enum req_state {
 	NET_SENDING,
 };
 
-struct request {
-	int net_fd;
-	int fs_fd;
-	void *out_buf;
-	unsigned int out_buf_size;
-	uint8_t *request;
-	unsigned int request_size;
-	enum req_state state;
-	time_t last_accessed; 
-	enum http_response_code http_code;
-};
-
 #endif /* _LITTLE_H_ */

@@ -1,4 +1,5 @@
 #include "little.h"
+#include "requests.h"
 #include <stdlib.h>
 #include <unistd.h>
 
