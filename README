@@ -1,0 +1,32 @@
+Dependencies
+============
+To be built, you'll need to have the following software installed
+(archlinux packages):
+* cmake
+* file
+* openssl
+
+For the record, little has been tested with:
+* cmake 2.4.8
+* file 4.23
+* openssl 0.9.8g
+* gcc 4.3.0
+
+Tests
+=====
+
+If you which to launch tests (make test), you'll need in addition:
+* perl
+* wget
+* Apache's ab
+* diff
+* to chmod 0 tests/not_readable.html
+
+Code coverage reported by gcov is about 75%, with the test suite.
+
+Running little
+==============
+
+Executing ./little should be enough, it will listen for requests on
+"0.0.0.0:8080", see "struct configuration config" in little.c to change
+those settings.

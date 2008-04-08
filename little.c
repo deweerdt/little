@@ -46,7 +46,8 @@ static struct configuration config = {	.port = 8080,
  */
 static time_t now;
 
-void *time_thread(void __attribute__((unused)) *arg)
+static pthread_t timethread;
+static void *time_thread(void __attribute__((unused)) *arg)
 {
 	do {
 		now = time(NULL);
@@ -58,7 +59,7 @@ void *time_thread(void __attribute__((unused)) *arg)
 /**
  * Exit on SIGINT
  */
-void sigint_handler(int arg __attribute__((unused)))
+static void sigint_handler(int  __attribute__((unused)) arg)
 {
 	exit(0);
 }
@@ -220,17 +221,14 @@ err:
 
 /**
  * @brief Switch the state of the request.
- * This may involve manipulating the poll fd set, to poll a fd to EPOLLOUT
- * instead of EPOLLIN
  *
  * @param req  the requests, that changes state
  * @param new_state  the new state of the request
- * @param poll_fd  the poll_fd if manipulation is needed
  *
  * @return Returns 1 on success, 0 on failure (failed epoll_ctl)
  **/
  __attribute__((warn_unused_result))
-static int state_to(struct request *req, enum req_state new_state, int poll_fd)
+static int state_to(struct request *req, enum req_state new_state)
 {
 	static struct epoll_event ev;
 
@@ -242,7 +240,7 @@ static int state_to(struct request *req, enum req_state new_state, int poll_fd)
 			assert(req->state == NET_RECEIVING);
 			ev.events = EPOLLOUT;
 			ev.data.fd = req->net_fd;
-			if (epoll_ctl(poll_fd, EPOLL_CTL_MOD, req->net_fd, &ev) < 0) {
+			if (epoll_ctl(req->poll_fd, EPOLL_CTL_MOD, req->net_fd, &ev) < 0) {
 				perror("epoll_ctl mod");
 				return 0;
 			}
@@ -256,9 +254,17 @@ static int state_to(struct request *req, enum req_state new_state, int poll_fd)
 	return 1;
 }
 
-static void process_net_receiving(struct request *req, int poll_fd)
+/**
+ * @brief state == NET_RECEIVING procedure
+ *
+ * @param req the request being serviced
+ *
+ * @return 
+ **/
+static void process_net_receiving(struct request *req)
 {
 	int ret;
+
 	ret = read(req->net_fd, req->request + req->request_size, BUFSIZ);
 	if (ret < 0) {
 		perror("read");
@@ -276,7 +282,7 @@ static void process_net_receiving(struct request *req, int poll_fd)
 	if (req->request_size > config.max_request_size) {
 		/* too long: inform the client */
 		req->http_code = Bad_Request;
-		if (!state_to(req, NET_SENDING_STATUS, poll_fd)) {
+		if (!state_to(req, NET_SENDING_STATUS)) {
 			req_del(req->net_fd);
 		}
 		return;
@@ -286,7 +292,7 @@ static void process_net_receiving(struct request *req, int poll_fd)
 	    && !memcmp(&req->request[req->request_size-CRLF_LEN], CRLF, CRLF_LEN)) {
 		char *url;
 
-		if (!state_to(req, NET_SENDING_STATUS, poll_fd)) {
+		if (!state_to(req, NET_SENDING_STATUS)) {
 			req_del(req->net_fd);
 			return;
 		}
@@ -310,7 +316,14 @@ static void process_net_receiving(struct request *req, int poll_fd)
 		}
 	}
 }
-static void process_net_sending_status(struct request *req, int poll_fd)
+
+/**
+ * @brief state == NET_SENDING_STATUS process: 
+ * Send the header corresponding to the http_code
+ *
+ * @param req the request being serviced 
+ **/
+static void process_net_sending_status(struct request *req)
 {
 	int size, ret;
 	const char *status;
@@ -326,11 +339,18 @@ static void process_net_sending_status(struct request *req, int poll_fd)
 		return;
 	}
 
-	if (!state_to(req, NET_SENDING, poll_fd))
+	if (!state_to(req, NET_SENDING))
 		req_del(req->net_fd);
 
 }
-static void process_net_sending(struct request *req, int poll_fd)
+
+/**
+ * @brief state == NET_SENDING process: read the local file and send it
+ * over the socket
+ *
+ * @param req the request being serviced 
+ **/
+static void process_net_sending(struct request *req)
 {
 	int ret;
 
@@ -338,7 +358,7 @@ static void process_net_sending(struct request *req, int poll_fd)
 		ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
 		if (ret < 0) {
 			req->http_code = Internal_Server_Error;
-			if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+			if (!state_to(req, NET_SENDING_STATUS))
 				req_del(req->net_fd);
 			return;
 		}
@@ -354,7 +374,7 @@ static void process_net_sending(struct request *req, int poll_fd)
 		ret = read(req->fs_fd, out_buf, sizeof(out_buf));
 		if (ret < 0) {
 			req->http_code = Internal_Server_Error;
-			if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+			if (!state_to(req, NET_SENDING_STATUS))
 				req_del(req->net_fd);
 			return;
 		}
@@ -373,6 +393,12 @@ static void process_net_sending(struct request *req, int poll_fd)
 	return;
 }
 
+/**
+ * @brief Called upon receiving a new incoming connection
+ *
+ * @param server the server socket to accept from 
+ * @param poll_fd the epoll fd to add the new client to 
+ **/
 static void process_new_client(int server, int poll_fd)
 {
 	struct sockaddr_in client_addr;
@@ -400,7 +426,7 @@ static void process_new_client(int server, int poll_fd)
 		return;
 	}
 
-	ev.events = EPOLLIN;
+	ev.events = EPOLLIN | EPOLLPRI;
 	ev.data.fd = client;
 	if (epoll_ctl(poll_fd, EPOLL_CTL_ADD, client, &ev) < 0) {
 		perror("epoll_ctrl add");
@@ -419,6 +445,7 @@ static void process_new_client(int server, int poll_fd)
 	req->request_size = 0;
 	req->last_accessed = now;
 	req->is_binary = 0;
+	req->poll_fd = poll_fd;
 	req_add(req);
 }
 
@@ -431,7 +458,6 @@ int main()
        	struct epoll_event *events;
 	int maxevents = 512;
 	int poll_fd;
-	pthread_t timethread;
 	time_t last_gc;
 
 	if (!req_init()) {
@@ -499,7 +525,7 @@ int main()
 		exit(1);
 	}
 
-	ev.events = EPOLLIN | EPOLLPRI | EPOLLERR | EPOLLHUP;
+	ev.events = EPOLLIN | EPOLLPRI;
 	ev.data.fd = server;
 	ret = epoll_ctl(poll_fd, EPOLL_CTL_ADD, server, &ev);
 	if (ret < 0) {
@@ -539,13 +565,13 @@ int main()
 
 				switch(req->state) {
 					case NET_RECEIVING:
-						process_net_receiving(req, poll_fd);
+						process_net_receiving(req);
 						break;
 					case NET_SENDING_STATUS:
-						process_net_sending_status(req, poll_fd);
+						process_net_sending_status(req);
 						break;
 					case NET_SENDING:
-						process_net_sending(req, poll_fd);
+						process_net_sending(req);
 						break;
 					default:
 						assert(0);

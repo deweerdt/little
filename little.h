@@ -8,6 +8,7 @@
 
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof(a[0]))
 
+/* Holds the server configuration data */
 struct configuration {
 	/** the port to bind to */
 	unsigned short port;
@@ -15,12 +16,11 @@ struct configuration {
 	char bind_address[17];
 	/** max size of an incoming http request, in bytes */
 	unsigned int max_request_size;
-	/** for socket or file IO, in bytes */
-	unsigned int buffer_size; 	
 	/** delay of inactivity before closing a socket */
 	int socket_timeout;
 };
 
+/** The different states the requests go through */
 enum req_state {
 	/** client socket just accepted, or receiving a request */
 	NET_RECEIVING,
