@@ -1,0 +1,12 @@
+#!/bin/bash
+
+LOCAL_TEST_BINARY="/tmp/test_binary"
+REMOTE_TEST_BINARY="./tests/binary_file"
+wget -q -O $LOCAL_TEST_BINARY http://localhost:8080/$(pwd)/$REMOTE_TEST_BINARY
+diff $LOCAL_TEST_BINARY $REMOTE_TEST_BINARY 2>&1 > /dev/null
+[ $? -eq 0 ] && exit 1
+
+base64 -d $LOCAL_TEST_BINARY > $LOCAL_TEST_BINARY.b64
+diff $LOCAL_TEST_BINARY.b64 $REMOTE_TEST_BINARY 2>&1 > /dev/null
+
+rm $LOCAL_TEST_BINARY.b64

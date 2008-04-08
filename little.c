@@ -37,8 +37,14 @@ static struct configuration config = {	.port = 8080,
 					.max_request_size = 16384,
 					.socket_timeout = 3 };
 
+/**
+ * In conjuction with the time_thread(), it keeps track of current wall time
+ * This is used for garbage collection of old sockets.
+ *
+ * Note that we don't bother protecting it, avoiding an unlikely extra
+ * garbage collection doesn't justify the overhead of atomical sets
+ */
 static time_t now;
-static magic_t magic_cookie;
 
 void *time_thread(void __attribute__((unused)) *arg)
 {
@@ -49,10 +55,33 @@ void *time_thread(void __attribute__((unused)) *arg)
 	return NULL;
 }
 
-static const char *build_status_line(struct request *req, int *size)
+/**
+ * Exit on SIGINT
+ */
+void sigint_handler(int arg __attribute__((unused)))
+{
+	exit(0);
+}
+
+/**
+ * Global libmagic handle, used to determine the mime type of the files we're
+ * accessing
+ */
+static magic_t magic_cookie;
+
+/**
+ * @brief Given an HTTP error code, build the standard HTTP response header
+ *
+ * @param code  the HTTP code (200, 404, ...), whose string form we want
+ * @param size  (out param), the size of the returned string
+ *
+ * @return the string representation of the HTTP error code
+ * 	   an error is cosidered fatal, this function aborts
+ **/
+static const char *build_status_line(enum http_response_code code, int *size)
 {
 	const char *ret = NULL;
-	switch (req->http_code) {
+	switch (code) {
 		case OK:
 			ret = STR_200;
 			*size = STR_200_LEN;
@@ -60,6 +89,10 @@ static const char *build_status_line(struct request *req, int *size)
 		case Bad_Request:
 			ret = STR_400;
 			*size = STR_400_LEN;
+			break;
+		case Forbidden:
+			ret = STR_403;
+			*size = STR_403_LEN;
 			break;
 		case Not_Found:
 			ret = STR_404;
@@ -74,18 +107,27 @@ static const char *build_status_line(struct request *req, int *size)
 			*size = STR_501_LEN;
 			break;
 		default:
-			fprintf(stderr, "unknown error code %d\n", req->http_code);
+			fprintf(stderr, "unknown error code %d\n", code);
 			assert(0);
 	}
 	return ret;
 }
 
+/**
+ * @brief Given a request, examine it's contents and try to parse the URL
+ *
+ * @param req the request from which the URL need to be extracted
+ *
+ * @return the successfully extracted URL (needs to be freed), or NULL
+ * 	   also req->http_code is set appropriately
+ **/
+ __attribute__((warn_unused_result))
 static char *parse_url(struct request *req)
 {
 	unsigned int i;
 	unsigned int minimal_url_len = 5 + CRLF_LEN; /* "GET /" + CRLF */
 	char *p, *url;
-	
+
 	req->http_code = OK;
 
 	/* some sanity checks */
@@ -102,7 +144,7 @@ static char *parse_url(struct request *req)
 	p = (char *)req->request + 4;
 	for (i = 0; i < req->request_size; i++) {
 		if (p[i] == '\r' || p[i] == '\n' || p[i] == ' ')
-			break;	
+			break;
 	}
 	url = malloc(i + 1);
 	if (!url) {
@@ -125,24 +167,30 @@ static int open_local_file(struct request *req, const char *path)
 	const char *magic_str;
 
 	/*
-	 * if magic failed for some reason, this is non fatal, proceed
-	 * anyway
-	 */ 
-	magic_str = magic_file(magic_cookie, path);
-	
-
+	 * This could be opened in non-blocking mode, but as man 2 read puts it:
+	 *
+	 * Many  filesystems  and  disks  were  considered to be fast enough
+	 * that the implementation of O_NONBLOCK was deemed unnecessary.
+	 */
 	req->fs_fd = open(path, O_RDONLY);
 	req->fs_fd_offset = 0;
 	if (req->fs_fd < 0)
 		goto err;
 
 	ret = fstat(req->fs_fd, &st);
-	if (ret < 0) 
+	if (ret < 0)
 		goto err;
 	if (S_ISDIR(st.st_mode)) {
 		req->http_code = Not_Found;
 		return 0;
 	}
+
+	/*
+	 * if magic failed for some reason, this is non fatal, proceed
+	 * anyway
+	 */
+	magic_str = magic_file(magic_cookie, path);
+
 
 	/* this is not plain text, base64 the file */
 	if (magic_str && strncmp("text", magic_str, 4)) {
@@ -153,7 +201,6 @@ static int open_local_file(struct request *req, const char *path)
 		b64 = BIO_new(BIO_f_base64());
 		req->bio_fd = BIO_new_socket(req->net_fd, BIO_NOCLOSE);
 		req->bio_fd = BIO_push(b64, req->bio_fd);
-		//BIO_set_mem_eof_return(req->bio_fd, 0);
 	}
 
 	return 1;
@@ -162,7 +209,7 @@ err:
 		case ENOENT:
 			req->http_code = Not_Found;
 			break;
-		case EPERM:
+		case EACCES:
 			req->http_code = Forbidden;
 			break;
 		default:
@@ -171,35 +218,42 @@ err:
 	return 0;
 }
 
+/**
+ * @brief Switch the state of the request.
+ * This may involve manipulating the poll fd set, to poll a fd to EPOLLOUT
+ * instead of EPOLLIN
+ *
+ * @param req  the requests, that changes state
+ * @param new_state  the new state of the request
+ * @param poll_fd  the poll_fd if manipulation is needed
+ *
+ * @return Returns 1 on success, 0 on failure (failed epoll_ctl)
+ **/
  __attribute__((warn_unused_result))
-static int state_to(struct request *req, enum req_state state, int poll_fd)
+static int state_to(struct request *req, enum req_state new_state, int poll_fd)
 {
 	static struct epoll_event ev;
-	
-	switch(state) {
+
+	switch(new_state) {
 		case NET_SENDING:
+			assert(req->state == NET_SENDING_STATUS);
 			break;
 		case NET_SENDING_STATUS:
+			assert(req->state == NET_RECEIVING);
 			ev.events = EPOLLOUT;
 			ev.data.fd = req->net_fd;
 			if (epoll_ctl(poll_fd, EPOLL_CTL_MOD, req->net_fd, &ev) < 0) {
 				perror("epoll_ctl mod");
-				req_del(req->net_fd);
 				return 0;
 			}
 			break;
 		default:
-			fprintf(stderr, "Unknown state %d\n", state);
+			fprintf(stderr, "Unknown state %d\n", new_state);
 			assert(0);
 	}
 
-	req->state = state;
+	req->state = new_state;
 	return 1;
-}
-
-void sigint_handler(int arg __attribute__((unused)))
-{
-	exit(0);
 }
 
 static void process_net_receiving(struct request *req, int poll_fd)
@@ -220,19 +274,22 @@ static void process_net_receiving(struct request *req, int poll_fd)
 
 	/* is request too long ? */
 	if (req->request_size > config.max_request_size) {
+		/* too long: inform the client */
 		req->http_code = Bad_Request;
 		if (!state_to(req, NET_SENDING_STATUS, poll_fd)) {
 			req_del(req->net_fd);
 		}
 		return;
 	}
-	/* is that a full request, if yes try to parse it */
+	/* is that a full request? if yes try to parse it */
 	if (req->request_size > CRLF_LEN
 	    && !memcmp(&req->request[req->request_size-CRLF_LEN], CRLF, CRLF_LEN)) {
 		char *url;
 
-		if (!state_to(req, NET_SENDING_STATUS, poll_fd))
+		if (!state_to(req, NET_SENDING_STATUS, poll_fd)) {
+			req_del(req->net_fd);
 			return;
+		}
 
 		url = parse_url(req);
 		if (!url)
@@ -257,7 +314,7 @@ static void process_net_sending_status(struct request *req, int poll_fd)
 {
 	int size, ret;
 	const char *status;
-	status = build_status_line(req, &size);
+	status = build_status_line(req->http_code, &size);
 	ret = write(req->net_fd, status, size);
 	if (ret < 0) {
 		perror("write");
@@ -375,6 +432,7 @@ int main()
 	int maxevents = 512;
 	int poll_fd;
 	pthread_t timethread;
+	time_t last_gc;
 
 	if (!req_init()) {
 		perror("Cannot init internal memory");
@@ -424,7 +482,7 @@ int main()
 		exit(1);
 	}
 
-	ret = listen(server, 10);
+	ret = listen(server, 128);
 	if (ret < 0) {
 		perror("Cannot listen");
 		exit(1);
@@ -449,10 +507,10 @@ int main()
 		exit(1);
 	}
 
+	last_gc = now;
 	do {
 		int n;
 		int nfds;
-		time_t last_gc = now;
 
 		nfds = epoll_wait(poll_fd, events, maxevents, config.socket_timeout * 1000);
 

@@ -1,10 +1,15 @@
-#include "little.h"
-#include "requests.h"
 #include <stdlib.h>
 #include <unistd.h>
-
+#include <assert.h>
 #include <openssl/bio.h>
 
+#include "little.h"
+#include "requests.h"
+
+/**
+ * Holds all the handled requests, inited by req_init().
+ * The array is indexed by the request->net_fd file descriptor
+ */
 static struct request **reqs;
 
 int req_init()
@@ -19,8 +24,11 @@ void req_del(int fd)
 		BIO_free_all(reqs[fd]->bio_fd);
 
 	}
-	if (reqs[fd]->fs_fd > 0)
+
+	if (reqs[fd]->fs_fd > 0) {
 		close(reqs[fd]->fs_fd);
+	}
+
 	close(reqs[fd]->net_fd);
 	free(reqs[fd]->request);
 	free(reqs[fd]);
