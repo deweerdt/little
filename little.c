@@ -23,11 +23,6 @@
 #include <assert.h>
 #include <pthread.h>
 
-#include <magic.h>
-
-#include <openssl/bio.h>
-#include <openssl/evp.h>
-
 #include "http.h"
 #include "little.h"
 #include "requests.h"
@@ -63,12 +58,6 @@ static void sigint_handler(int  __attribute__((unused)) arg)
 {
 	exit(0);
 }
-
-/**
- * Global libmagic handle, used to determine the mime type of the files we're
- * accessing
- */
-static magic_t magic_cookie;
 
 /**
  * @brief Given an HTTP error code, build the standard HTTP response header
@@ -165,7 +154,6 @@ static int open_local_file(struct request *req, const char *path)
 
 	struct stat st;
 	int ret;
-	const char *magic_str;
 
 	/*
 	 * This could be opened in non-blocking mode, but as man 2 read puts it:
@@ -184,24 +172,6 @@ static int open_local_file(struct request *req, const char *path)
 	if (S_ISDIR(st.st_mode)) {
 		req->http_code = Not_Found;
 		return 0;
-	}
-
-	/*
-	 * if magic failed for some reason, this is non fatal, proceed
-	 * anyway
-	 */
-	magic_str = magic_file(magic_cookie, path);
-
-
-	/* this is not plain text, base64 the file */
-	if (magic_str && strncmp("text", magic_str, 4)) {
-		BIO *b64;
-
-		req->is_binary = 1;
-
-		b64 = BIO_new(BIO_f_base64());
-		req->bio_fd = BIO_new_socket(req->net_fd, BIO_NOCLOSE);
-		req->bio_fd = BIO_push(b64, req->bio_fd);
 	}
 
 	return 1;
@@ -354,43 +324,19 @@ static void process_net_sending(struct request *req)
 {
 	int ret;
 
-	if (!req->is_binary) {
-		ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
-		if (ret < 0) {
-			req->http_code = Internal_Server_Error;
-			if (!state_to(req, NET_SENDING_STATUS))
-				req_del(req->net_fd);
-			return;
-		}
-
-		/* File was sent, no more to send => close descriptor */
-		if (!ret) {
+	ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
+	if (ret < 0) {
+		req->http_code = Internal_Server_Error;
+		if (!state_to(req, NET_SENDING_STATUS))
 			req_del(req->net_fd);
-			return;
-		}
-	} else {
-		char out_buf[BUFSIZ];
-
-		ret = read(req->fs_fd, out_buf, sizeof(out_buf));
-		if (ret < 0) {
-			req->http_code = Internal_Server_Error;
-			if (!state_to(req, NET_SENDING_STATUS))
-				req_del(req->net_fd);
-			return;
-		}
-
-		/* File was sent, no more to send => close descriptor */
-		if (!ret) {
-			req_del(req->net_fd);
-			return;
-		}
-
-		ret = BIO_write(req->bio_fd, out_buf, ret);
-		if (ret <= 0 ) {
-			req_del(req->net_fd);
-		}
+		return;
 	}
-	return;
+
+	/* File was sent, no more to send => close descriptor */
+	if (!ret) {
+		req_del(req->net_fd);
+		return;
+	}
 }
 
 /**
@@ -444,7 +390,6 @@ static void process_new_client(int server, int poll_fd)
 	req->request = malloc(BUFSIZ);
 	req->request_size = 0;
 	req->last_accessed = now;
-	req->is_binary = 0;
 	req->poll_fd = poll_fd;
 	req_add(req);
 }
@@ -463,17 +408,6 @@ int main()
 	if (!req_init()) {
 		perror("Cannot init internal memory");
 		exit(1);
-	}
-
-	magic_cookie = magic_open(MAGIC_MIME_TYPE);
-	if (!magic_cookie) {
-		perror("Cannot init magic cookie");
-		exit(0);
-	}
-	ret = magic_load(magic_cookie, NULL);
-	if (ret < 0) {
-		perror("Cannot init magic database");
-		exit(0);
 	}
 
 	signal(SIGINT, sigint_handler);

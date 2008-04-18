@@ -15,9 +15,6 @@ struct request {
 	enum req_state state;		/* the state of the request */
 	time_t last_accessed; 		/* last time said socket was accessed */
 	enum http_response_code http_code; /* the http response code */
-	int is_binary;			/* is the local file a binary file? */
-	BIO *bio_fd;			/* special BIO encoder (base64) in case 
-					   the file is binary */
 };
 
 /**

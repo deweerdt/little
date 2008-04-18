@@ -20,11 +20,6 @@ int req_init()
 
 void req_del(int fd)
 {
-	if (reqs[fd]->is_binary) {
-		BIO_free_all(reqs[fd]->bio_fd);
-
-	}
-
 	if (reqs[fd]->fs_fd > 0) {
 		close(reqs[fd]->fs_fd);
 	}
