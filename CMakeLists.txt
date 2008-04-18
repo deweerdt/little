@@ -6,7 +6,6 @@ ADD_TEST(Nominal ${CMAKE_SOURCE_DIR}/tests/typical_ab)
 ADD_TEST(HugeFile ${CMAKE_SOURCE_DIR}/tests/huge_ab)
 ADD_TEST(Test404 ${CMAKE_SOURCE_DIR}/tests/404_ab)
 ADD_TEST(Test403 ${CMAKE_SOURCE_DIR}/tests/403_ab)
-ADD_TEST(Base64 ${CMAKE_SOURCE_DIR}/tests/base64)
 
 ADD_EXECUTABLE(little little.c requests.c)
 

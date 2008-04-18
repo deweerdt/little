@@ -1,1 +1,4 @@
-ab -c 512 -n 1000 http://localhost:8080/missing_file
+URL=http://localhost:8080/missing_file
+wget $URL 2>&1  | grep 404
+[ 0 -eq $? ] || exit 1
+ab -c 512 -n 1000 $URL

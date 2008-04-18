@@ -30,6 +30,7 @@
 static struct configuration config = {	.port = 8080,
 					.bind_address = "0.0.0.0",
 					.max_request_size = 16384,
+					.root_dir = "/home/httpd/html",
 					.socket_timeout = 3 };
 
 /**
@@ -103,6 +104,33 @@ static const char *build_status_line(enum http_response_code code, int *size)
 	return ret;
 }
 
+ __attribute__((warn_unused_result))
+static int get_type_from_url(const char *url)
+{
+	(void)url;
+	return LOCAL_FILE;
+}
+
+static char *url_to_path(const char *url)
+{
+	char *path;
+	/* ignore those paths for now */
+	if (strstr(url, "..")) {
+		path = malloc(2);
+		if (path)
+			strcpy(path, "/");
+		goto out;
+	}
+	path = malloc(config.max_request_size + sizeof(config.root_dir) + 2);
+	if (!path)
+		goto out;
+
+	sprintf(path, "%s/%s", config.root_dir, url);
+
+out:
+	return path;
+}
+
 /**
  * @brief Given a request, examine it's contents and try to parse the URL
  *
@@ -139,6 +167,7 @@ static char *parse_url(struct request *req)
 	url = malloc(i + 1);
 	if (!url) {
 		req->http_code = Internal_Server_Error;
+		assert(0);
 		return NULL;
 	}
 
@@ -148,13 +177,14 @@ static char *parse_url(struct request *req)
 	return url;
 }
 
- __attribute__((warn_unused_result))
 static int open_local_file(struct request *req, const char *path)
 {
 
 	struct stat st;
 	int ret;
 
+	if (!path)
+		return 0;
 	/*
 	 * This could be opened in non-blocking mode, but as man 2 read puts it:
 	 *
@@ -260,7 +290,8 @@ static void process_net_receiving(struct request *req)
 	/* is that a full request? if yes try to parse it */
 	if (req->request_size > CRLF_LEN
 	    && !memcmp(&req->request[req->request_size-CRLF_LEN], CRLF, CRLF_LEN)) {
-		char *url;
+		char *url, *path = NULL;
+		enum req_type type;
 
 		if (!state_to(req, NET_SENDING_STATUS)) {
 			req_del(req->net_fd);
@@ -271,11 +302,16 @@ static void process_net_receiving(struct request *req)
 		if (!url)
 			return;
 
-		if (!open_local_file(req, url)) {
-			free(url);
-			return;
+
+		type = get_type_from_url(url);
+		switch (type) {
+		case LOCAL_FILE:
+			path = url_to_path(url);
+			open_local_file(req, path);
+			free(path);
 		}
 		free(url);
+		return;
 	} else {
 		/* not a request, continue */
 		req->request = realloc(req->request, req->request_size + BUFSIZ);
@@ -325,15 +361,7 @@ static void process_net_sending(struct request *req)
 	int ret;
 
 	ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
-	if (ret < 0) {
-		req->http_code = Internal_Server_Error;
-		if (!state_to(req, NET_SENDING_STATUS))
-			req_del(req->net_fd);
-		return;
-	}
-
-	/* File was sent, no more to send => close descriptor */
-	if (!ret) {
+	if (ret <= 0) {
 		req_del(req->net_fd);
 		return;
 	}
@@ -404,6 +432,8 @@ int main()
 	int maxevents = 512;
 	int poll_fd;
 	time_t last_gc;
+
+	chdir(config.root_dir);
 
 	if (!req_init()) {
 		perror("Cannot init internal memory");

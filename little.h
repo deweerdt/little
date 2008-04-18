@@ -1,8 +1,10 @@
 #ifndef _LITTLE_H_
 #define _LITTLE_H_
 
+#include <limits.h>
 #include <stdint.h>
 #include <time.h>
+
 
 #include "http.h"
 
@@ -18,8 +20,13 @@ struct configuration {
 	unsigned int max_request_size;
 	/** delay of inactivity before closing a socket */
 	int socket_timeout;
+	/** delay of inactivity before closing a socket */
+	char root_dir[_POSIX_PATH_MAX];
 };
 
+enum req_type {
+	LOCAL_FILE,
+};
 /** The different states the requests go through */
 enum req_state {
 	/** client socket just accepted, or receiving a request */

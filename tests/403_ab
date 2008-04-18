@@ -1,1 +1,4 @@
-ab -c 512 -n 1000 http://localhost:8080/$(pwd)/tests/not_readable.html
+URL=http://localhost:8080/not_readable
+wget $URL 2>&1  | grep 403
+[ 0 -eq $? ] || exit 1
+ab -c 512 -n 1000 $URL
