@@ -1,7 +1,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <assert.h>
-#include <openssl/bio.h>
 
 #include "little.h"
 #include "requests.h"

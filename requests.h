@@ -3,7 +3,6 @@
 
 #include <sys/types.h>
 #include <stdint.h>
-#include <openssl/bio.h>
 
 struct request {
 	int net_fd; 			/* the socket file descriptor */
