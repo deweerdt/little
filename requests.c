@@ -22,6 +22,9 @@ void req_del(int fd)
 	if (reqs[fd]->fs_fd > 0) {
 		close(reqs[fd]->fs_fd);
 	}
+	if (reqs[fd]->dir) {
+		closedir(reqs[fd]->dir);
+	}
 
 	close(reqs[fd]->net_fd);
 	free(reqs[fd]->request);

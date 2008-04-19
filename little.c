@@ -1,27 +1,23 @@
 #define __USE_GNU
 
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/socket.h>
-#include <stdlib.h>
-#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
-#include <arpa/inet.h>
-
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/epoll.h>
 #include <sys/sendfile.h>
-
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-#include <signal.h>
-#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
-#include <errno.h>
-
-#include <assert.h>
-#include <pthread.h>
+#include <unistd.h>
 
 #include "http.h"
 #include "little.h"
@@ -108,7 +104,7 @@ static const char *build_status_line(enum http_response_code code, int *size)
 static int get_type_from_url(const char *url)
 {
 	(void)url;
-	return LOCAL_FILE;
+	return LOCAL_FS_REQ;
 }
 
 static char *url_to_path(const char *url)
@@ -167,7 +163,6 @@ static char *parse_url(struct request *req)
 	url = malloc(i + 1);
 	if (!url) {
 		req->http_code = Internal_Server_Error;
-		assert(0);
 		return NULL;
 	}
 
@@ -200,10 +195,11 @@ static int open_local_file(struct request *req, const char *path)
 	if (ret < 0)
 		goto err;
 	if (S_ISDIR(st.st_mode)) {
-		req->http_code = Not_Found;
-		return 0;
+		req->resp_type = LOCAL_DIR;
+		return 1;
 	}
 
+	req->resp_type = LOCAL_FILE;
 	return 1;
 err:
 	switch (errno) {
@@ -291,7 +287,7 @@ static void process_net_receiving(struct request *req)
 	if (req->request_size > CRLF_LEN
 	    && !memcmp(&req->request[req->request_size-CRLF_LEN], CRLF, CRLF_LEN)) {
 		char *url, *path = NULL;
-		enum req_type type;
+		enum url_type type;
 
 		if (!state_to(req, NET_SENDING_STATUS)) {
 			req_del(req->net_fd);
@@ -305,7 +301,7 @@ static void process_net_receiving(struct request *req)
 
 		type = get_type_from_url(url);
 		switch (type) {
-		case LOCAL_FILE:
+		case LOCAL_FS_REQ:
 			path = url_to_path(url);
 			open_local_file(req, path);
 			free(path);
@@ -360,10 +356,51 @@ static void process_net_sending(struct request *req)
 {
 	int ret;
 
-	ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
-	if (ret <= 0) {
-		req_del(req->net_fd);
-		return;
+	if (req->resp_type == LOCAL_FILE) {
+		ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
+		if (ret <= 0) {
+			req_del(req->net_fd);
+			return;
+		}
+	} else {
+		struct dirent *dirent;
+
+		if (!req->dir) {
+			char dir_header[] = "<html><body>";
+			ret = write(req->net_fd, dir_header, sizeof(dir_header));
+		}
+
+		DIR *fdopendir(int fd);
+		req->dir = fdopendir(req->fs_fd);
+		if (!req->dir) {
+			req->http_code = Internal_Server_Error;
+			if (!state_to(req, NET_SENDING_STATUS)) {
+				req_del(req->net_fd);
+			}
+			return;
+		}
+		/* if write was blocking, retry later */
+		if (ret == -EAGAIN)
+			return;
+
+		do {
+			char buf[BUFSIZ];
+			int len;
+
+			dirent = readdir(req->dir);
+			if (!dirent)
+				break;
+
+			len = sprintf(buf, "<a href=\"%s\">%s</a><br>", dirent->d_name, dirent->d_name);
+			ret = write(req->net_fd, buf, len);
+		} while (req->dir && ret != -EAGAIN);
+		if (!dirent) {
+			char dir_footer[] = "</body></html>";
+			ret = write(req->net_fd, dir_footer, sizeof(dir_footer));
+			if (ret == -EAGAIN)
+				return;
+			req_del(req->net_fd);
+		}
 	}
 }
 
@@ -419,6 +456,7 @@ static void process_new_client(int server, int poll_fd)
 	req->request_size = 0;
 	req->last_accessed = now;
 	req->poll_fd = poll_fd;
+	req->dir = NULL;
 	req_add(req);
 }
 

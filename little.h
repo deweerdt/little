@@ -24,8 +24,12 @@ struct configuration {
 	char root_dir[_POSIX_PATH_MAX];
 };
 
-enum req_type {
+enum url_type {
+	LOCAL_FS_REQ,
+};
+enum resp_type {
 	LOCAL_FILE,
+	LOCAL_DIR,
 };
 /** The different states the requests go through */
 enum req_state {
