@@ -36,7 +36,7 @@ void req_garbage_collect(time_t now, int timeout)
 {
 	unsigned int i;
 
-	for (i=0; i < ARRAY_SIZE(reqs); i++) {
+	for (i = 0; i < ARRAY_SIZE(reqs); i++) {
 		if (reqs[i]
 		    && difftime(now, reqs[i]->last_accessed) > timeout) {
 			req_del(reqs[i]->net_fd);

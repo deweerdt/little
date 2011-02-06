@@ -26,7 +26,7 @@
 static struct configuration config = {	.port = 8080,
 					.bind_address = "0.0.0.0",
 					.max_request_size = 16384,
-					.root_dir = "/home/httpd/html",
+					.root_dir = "/tmp/html",
 					.socket_timeout = 3 };
 
 /**
@@ -44,7 +44,7 @@ static void *time_thread(void __attribute__((unused)) *arg)
 	do {
 		now = time(NULL);
 		sleep(config.socket_timeout);
-	} while(1);
+	} while (1);
 	return NULL;
 }
 
@@ -63,44 +63,44 @@ static void sigint_handler(int  __attribute__((unused)) arg)
  * @param size  (out param), the size of the returned string
  *
  * @return the string representation of the HTTP error code
- * 	   an error is cosidered fatal, this function aborts
+ *	   an error is cosidered fatal, this function aborts
  **/
 static const char *build_status_line(enum http_response_code code, int *size)
 {
 	const char *ret = NULL;
 	switch (code) {
-		case OK:
-			ret = STR_200;
-			*size = STR_200_LEN;
-			break;
-		case Bad_Request:
-			ret = STR_400;
-			*size = STR_400_LEN;
-			break;
-		case Forbidden:
-			ret = STR_403;
-			*size = STR_403_LEN;
-			break;
-		case Not_Found:
-			ret = STR_404;
-			*size = STR_404_LEN;
-			break;
-		case Internal_Server_Error:
-			ret = STR_500;
-			*size = STR_500_LEN;
-			break;
-		case Not_Implemented:
-			ret = STR_501;
-			*size = STR_501_LEN;
-			break;
-		default:
-			fprintf(stderr, "unknown error code %d\n", code);
-			assert(0);
+	case OK:
+		ret = STR_200;
+		*size = STR_200_LEN;
+		break;
+	case Bad_Request:
+		ret = STR_400;
+		*size = STR_400_LEN;
+		break;
+	case Forbidden:
+		ret = STR_403;
+		*size = STR_403_LEN;
+		break;
+	case Not_Found:
+		ret = STR_404;
+		*size = STR_404_LEN;
+		break;
+	case Internal_Server_Error:
+		ret = STR_500;
+		*size = STR_500_LEN;
+		break;
+	case Not_Implemented:
+		ret = STR_501;
+		*size = STR_501_LEN;
+		break;
+	default:
+		fprintf(stderr, "unknown error code %d\n", code);
+		assert(0);
 	}
 	return ret;
 }
 
- __attribute__((warn_unused_result))
+__attribute__((warn_unused_result))
 static int get_type_from_url(const char *url)
 {
 	(void)url;
@@ -133,9 +133,9 @@ out:
  * @param req the request from which the URL need to be extracted
  *
  * @return the successfully extracted URL (needs to be freed), or NULL
- * 	   also req->http_code is set appropriately
+ *	   also req->http_code is set appropriately
  **/
- __attribute__((warn_unused_result))
+__attribute__((warn_unused_result))
 static char *parse_url(struct request *req)
 {
 	unsigned int i;
@@ -203,14 +203,14 @@ static int open_local_file(struct request *req, const char *path)
 	return 1;
 err:
 	switch (errno) {
-		case ENOENT:
-			req->http_code = Not_Found;
-			break;
-		case EACCES:
-			req->http_code = Forbidden;
-			break;
-		default:
-			req->http_code = Internal_Server_Error;
+	case ENOENT:
+		req->http_code = Not_Found;
+		break;
+	case EACCES:
+		req->http_code = Forbidden;
+		break;
+	default:
+		req->http_code = Internal_Server_Error;
 	}
 	return 0;
 }
@@ -223,27 +223,27 @@ err:
  *
  * @return Returns 1 on success, 0 on failure (failed epoll_ctl)
  **/
- __attribute__((warn_unused_result))
+__attribute__((warn_unused_result))
 static int state_to(struct request *req, enum req_state new_state)
 {
 	static struct epoll_event ev;
 
-	switch(new_state) {
-		case NET_SENDING:
-			assert(req->state == NET_SENDING_STATUS);
-			break;
-		case NET_SENDING_STATUS:
-			assert(req->state == NET_RECEIVING);
-			ev.events = EPOLLOUT;
-			ev.data.fd = req->net_fd;
-			if (epoll_ctl(req->poll_fd, EPOLL_CTL_MOD, req->net_fd, &ev) < 0) {
-				perror("epoll_ctl mod");
-				return 0;
-			}
-			break;
-		default:
-			fprintf(stderr, "Unknown state %d\n", new_state);
-			assert(0);
+	switch (new_state) {
+	case NET_SENDING:
+		assert(req->state == NET_SENDING_STATUS);
+		break;
+	case NET_SENDING_STATUS:
+		assert(req->state == NET_RECEIVING);
+		ev.events = EPOLLOUT;
+		ev.data.fd = req->net_fd;
+		if (epoll_ctl(req->poll_fd, EPOLL_CTL_MOD, req->net_fd, &ev) < 0) {
+			perror("epoll_ctl mod");
+			return 0;
+		}
+		break;
+	default:
+		fprintf(stderr, "Unknown state %d\n", new_state);
+		assert(0);
 	}
 
 	req->state = new_state;
@@ -255,7 +255,7 @@ static int state_to(struct request *req, enum req_state new_state)
  *
  * @param req the request being serviced
  *
- * @return 
+ * @return
  **/
 static void process_net_receiving(struct request *req)
 {
@@ -320,10 +320,10 @@ static void process_net_receiving(struct request *req)
 }
 
 /**
- * @brief state == NET_SENDING_STATUS process: 
+ * @brief state == NET_SENDING_STATUS process:
  * Send the header corresponding to the http_code
  *
- * @param req the request being serviced 
+ * @param req the request being serviced
  **/
 static void process_net_sending_status(struct request *req)
 {
@@ -350,7 +350,7 @@ static void process_net_sending_status(struct request *req)
  * @brief state == NET_SENDING process: read the local file and send it
  * over the socket
  *
- * @param req the request being serviced 
+ * @param req the request being serviced
  **/
 static void process_net_sending(struct request *req)
 {
@@ -407,13 +407,13 @@ static void process_net_sending(struct request *req)
 /**
  * @brief Called upon receiving a new incoming connection
  *
- * @param server the server socket to accept from 
- * @param poll_fd the epoll fd to add the new client to 
+ * @param server the server socket to accept from
+ * @param poll_fd the epoll fd to add the new client to
  **/
 static void process_new_client(int server, int poll_fd)
 {
 	struct sockaddr_in client_addr;
-	size_t addrlen;
+	socklen_t addrlen;
 	int flags, client;
 	struct request *req;
 	static struct epoll_event ev;
@@ -421,12 +421,13 @@ static void process_new_client(int server, int poll_fd)
 	addrlen = sizeof(client_addr);
 	client = accept(server, (struct sockaddr *)&client_addr,
 			&addrlen);
-	if (client < 0){
+	if (client < 0) {
 		perror("accept");
 		return;
 	}
 
-	if ((flags = fcntl(client, F_GETFL, 0)) < 0) {
+	flags = fcntl(client, F_GETFL, 0);
+	if (flags < 0) {
 		perror("fcntl 1");
 		return;
 	}
@@ -466,7 +467,7 @@ int main()
 	int server;
 	struct sockaddr_in server_addr;
 	static struct epoll_event ev;
-       	struct epoll_event *events;
+	struct epoll_event *events;
 	int maxevents = 512;
 	int poll_fd;
 	time_t last_gc;
@@ -565,18 +566,18 @@ int main()
 
 				req->last_accessed = now;
 
-				switch(req->state) {
-					case NET_RECEIVING:
-						process_net_receiving(req);
-						break;
-					case NET_SENDING_STATUS:
-						process_net_sending_status(req);
-						break;
-					case NET_SENDING:
-						process_net_sending(req);
-						break;
-					default:
-						assert(0);
+				switch (req->state) {
+				case NET_RECEIVING:
+					process_net_receiving(req);
+					break;
+				case NET_SENDING_STATUS:
+					process_net_sending_status(req);
+					break;
+				case NET_SENDING:
+					process_net_sending(req);
+					break;
+				default:
+					assert(0);
 				}
 			}
 		}

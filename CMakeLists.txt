@@ -1,3 +1,4 @@
+CMAKE_MINIMUM_REQUIRED(VERSION 2.6)
 ENABLE_TESTING()
 
 ADD_TEST(FunkyUrls ${CMAKE_SOURCE_DIR}/tests/funky_urls aze)
@@ -12,7 +13,7 @@ ADD_EXECUTABLE(little little.c requests.c)
 OPTION(PROFILE ON)
 IF(PROFILE)
 	SET(PROF_OPT "-fprofile-arcs -ftest-coverage")
-	TARGET_LINK_LIBRARIES(little gcov)	
+	TARGET_LINK_LIBRARIES(little gcov)
 ENDIF(PROFILE)
 
 TARGET_LINK_LIBRARIES(little pthread)
