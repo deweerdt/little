@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "string.h"
+#include "str.h"
 
 struct string *string_new(const char *str)
 {

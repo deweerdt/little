@@ -1,7 +1,7 @@
 #ifndef _HTTP_H_
 #define _HTTP_H_
 
-#include "string.h"
+#include "str.h"
 
 #define CRLF "\r\n"
 #define CRLF_LEN 2

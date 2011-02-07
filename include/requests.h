@@ -5,7 +5,7 @@
 #include <dirent.h>
 #include <stdint.h>
 #include <netinet/in.h>
-#include "string.h"
+#include "str.h"
 
 struct response {
 	enum http_response_code http_code; 	/* the http response code */

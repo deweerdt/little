@@ -1,5 +1,7 @@
 #include "hash.h"
 
+#include <string.h>
+
 struct hash_elem {
 	void *data;
 	struct list l;
