@@ -16,21 +16,12 @@ struct configuration {
 	unsigned short port;
 	/** the address to bind to */
 	char bind_address[17];
-	/** max size of an incoming http request, in bytes */
-	unsigned int max_request_size;
 	/** delay of inactivity before closing a socket */
 	int socket_timeout;
 	/** delay of inactivity before closing a socket */
 	char root_dir[_POSIX_PATH_MAX];
 };
 
-enum url_type {
-	LOCAL_FS_REQ,
-};
-enum resp_type {
-	LOCAL_FILE,
-	LOCAL_DIR,
-};
 /** The different states the requests go through */
 enum req_state {
 	/** client socket just accepted, or receiving a request */

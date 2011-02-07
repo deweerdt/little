@@ -8,11 +8,11 @@ enum log_flags {
 	ERRNO = 1 << 1,
 };
 enum log_level {
-	CRITICAL,
-	ERROR,
-	WARN,
-	INFO,
 	DEBUG,
+	INFO,
+	WARN,
+	ERROR,
+	CRITICAL,
 };
 
 void log_init(void);

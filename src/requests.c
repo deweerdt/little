@@ -7,6 +7,7 @@
 #include "hash.h"
 #include "log.h"
 #include "little.h"
+#include "handler.h"
 #include "requests.h"
 
 /**
@@ -21,13 +22,20 @@ int req_init()
 	return !!reqs;
 }
 
+void req_flush(struct request *req)
+{
+	(void)req;
+	return;
+}
+
 void req_del(int fd)
 {
 	if (reqs[fd]->fs_fd > 0) {
 		close(reqs[fd]->fs_fd);
 	}
-	if (reqs[fd]->dir) {
-		closedir(reqs[fd]->dir);
+	if (reqs[fd]->handler
+	    && reqs[fd]->handler->cleanup) {
+		reqs[fd]->handler->cleanup(reqs[fd]);
 	}
 
 	close(reqs[fd]->net_fd);

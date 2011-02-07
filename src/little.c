@@ -16,17 +16,22 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include <getopt.h>
 
 #include "http.h"
 #include "little.h"
 #include "log.h"
 #include "requests.h"
+#include "handler.h"
 
-static struct configuration config = {	.port = 8080,
-					.bind_address = "0.0.0.0",
-					.max_request_size = 16384,
-					.root_dir = "/home/def/p/my_projects/little/tests",
-					.socket_timeout = 3 };
+#define MAX_REQUEST_SIZE 16384
+
+static 	struct configuration config = {
+	.port = 8080,
+	.bind_address = "0.0.0.0",
+	.root_dir = "/tmp",
+	.socket_timeout = 3
+};
 
 /**
  * In conjuction with the time_thread(), it keeps track of current wall time
@@ -59,51 +64,29 @@ static void sigint_handler(int  __attribute__((unused)) arg)
  * @brief Given an HTTP error code, build the standard HTTP response header
  *
  * @param code  the HTTP code (200, 404, ...), whose string form we want
- * @param size  (out param), the size of the returned string
  *
  * @return the string representation of the HTTP error code
  *	   an error is cosidered fatal, this function aborts
  **/
-static const char *build_status_line(enum http_response_code code, int *size)
+static struct string build_status_line(enum http_response_code code)
 {
-	const char *ret = NULL;
 	switch (code) {
 	case OK:
-		ret = STR_200;
-		*size = STR_200_LEN;
-		break;
+		return STR_200;
 	case Bad_Request:
-		ret = STR_400;
-		*size = STR_400_LEN;
-		break;
+		return STR_400;
 	case Forbidden:
-		ret = STR_403;
-		*size = STR_403_LEN;
-		break;
+		return STR_403;
 	case Not_Found:
-		ret = STR_404;
-		*size = STR_404_LEN;
-		break;
+		return STR_404;
 	case Internal_Server_Error:
-		ret = STR_500;
-		*size = STR_500_LEN;
-		break;
+		return STR_500;
 	case Not_Implemented:
-		ret = STR_501;
-		*size = STR_501_LEN;
-		break;
+		return STR_501;
 	default:
 		logm(CRITICAL, NONE, "unknown error code %d\n", code);
 		assert(0);
 	}
-	return ret;
-}
-
-__attribute__((warn_unused_result))
-static int get_type_from_url(const char *url)
-{
-	(void)url;
-	return LOCAL_FS_REQ;
 }
 
 static char *url_to_path(const char *url)
@@ -116,7 +99,7 @@ static char *url_to_path(const char *url)
 			strcpy(path, "/");
 		goto out;
 	}
-	path = malloc(config.max_request_size + sizeof(config.root_dir) + 2);
+	path = malloc(MAX_REQUEST_SIZE + sizeof(config.root_dir) + 2);
 	if (!path)
 		goto out;
 
@@ -132,7 +115,7 @@ out:
  * @param req the request from which the URL need to be extracted
  *
  * @return the successfully extracted URL (needs to be freed), or NULL
- *	   also req->http_code is set appropriately
+ *	   also req->response->code is set appropriately
  **/
 __attribute__((warn_unused_result))
 static char *parse_url(struct request *req)
@@ -141,15 +124,15 @@ static char *parse_url(struct request *req)
 	unsigned int minimal_url_len = 5 + CRLF_LEN; /* "GET /" + CRLF */
 	char *p, *url;
 
-	req->http_code = OK;
+	req->response->http_code = OK;
 
 	/* some sanity checks */
 	if (req->request_size < minimal_url_len) {
-		req->http_code = Bad_Request;
+		req->response->http_code = Bad_Request;
 		return NULL;
 	}
 	if (memcmp("GET ", req->request, 4)) {
-		req->http_code = Not_Implemented;
+		req->response->http_code = Not_Implemented;
 		return NULL;
 	}
 
@@ -161,7 +144,7 @@ static char *parse_url(struct request *req)
 	}
 	url = malloc(i + 1);
 	if (!url) {
-		req->http_code = Internal_Server_Error;
+		req->response->http_code = Internal_Server_Error;
 		return NULL;
 	}
 
@@ -169,49 +152,6 @@ static char *parse_url(struct request *req)
 	url[i] = '\0';
 
 	return url;
-}
-
-static int open_local_file(struct request *req, const char *path)
-{
-
-	struct stat st;
-	int ret;
-
-	if (!path)
-		return 0;
-	/*
-	 * This could be opened in non-blocking mode, but as man 2 read puts it:
-	 *
-	 * Many  filesystems  and  disks  were  considered to be fast enough
-	 * that the implementation of O_NONBLOCK was deemed unnecessary.
-	 */
-	req->fs_fd = open(path, O_RDONLY);
-	req->fs_fd_offset = 0;
-	if (req->fs_fd < 0)
-		goto err;
-
-	ret = fstat(req->fs_fd, &st);
-	if (ret < 0)
-		goto err;
-	if (S_ISDIR(st.st_mode)) {
-		req->resp_type = LOCAL_DIR;
-		return 1;
-	}
-
-	req->resp_type = LOCAL_FILE;
-	return 1;
-err:
-	switch (errno) {
-	case ENOENT:
-		req->http_code = Not_Found;
-		break;
-	case EACCES:
-		req->http_code = Forbidden;
-		break;
-	default:
-		req->http_code = Internal_Server_Error;
-	}
-	return 0;
 }
 
 /**
@@ -249,6 +189,150 @@ static int state_to(struct request *req, enum req_state new_state)
 	return 1;
 }
 
+enum url_type {
+	LOCAL_FS_REQ,
+};
+
+enum resp_type {
+	LOCAL_FILE,
+	LOCAL_DIR,
+};
+
+struct file_handler_priv {
+	enum resp_type resp_type;
+	DIR *dir;
+};
+
+static int open_local_file(struct request *req, const char *path)
+{
+
+	struct stat st;
+	int ret;
+	struct file_handler_priv *handler_priv;
+
+	if (!path)
+		return 0;
+
+	handler_priv = req->priv;
+
+	/*
+	 * This could be opened in non-blocking mode, but as man 2 read puts it:
+	 *
+	 * Many  filesystems  and  disks  were  considered to be fast enough
+	 * that the implementation of O_NONBLOCK was deemed unnecessary.
+	 */
+	req->fs_fd = open(path, O_RDONLY);
+	req->fs_fd_offset = 0;
+	if (req->fs_fd < 0)
+		goto err;
+
+	ret = fstat(req->fs_fd, &st);
+	if (ret < 0)
+		goto err;
+	if (S_ISDIR(st.st_mode)) {
+		handler_priv->resp_type = LOCAL_DIR;
+		return 1;
+	}
+
+	handler_priv->resp_type = LOCAL_FILE;
+	return 1;
+err:
+	switch (errno) {
+	case ENOENT:
+		req->response->http_code = Not_Found;
+		break;
+	case EACCES:
+		req->response->http_code = Forbidden;
+		break;
+	default:
+		req->response->http_code = Internal_Server_Error;
+	}
+	return 0;
+}
+
+int file_handler_main(struct request *req)
+{
+	char *path;
+	int ret;
+	struct file_handler_priv *handler_priv;
+
+	req->priv = malloc(sizeof(struct file_handler_priv));
+	if (!req->priv)
+		return -1;
+
+	handler_priv = req->priv;
+
+	path = url_to_path(string_charstar(&req->url));
+	open_local_file(req, path);
+
+	if (handler_priv->resp_type == LOCAL_FILE) {
+		ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
+		if (ret <= 0) {
+			req_del(req->net_fd);
+			return -1;
+		}
+	} else {
+		struct dirent *dirent;
+
+		char dir_header[] = "<html><body>";
+		ret = write(req->net_fd, dir_header, sizeof(dir_header));
+
+		handler_priv->dir = fdopendir(req->fs_fd);
+		if (!handler_priv->dir) {
+			req->response->http_code = Internal_Server_Error;
+			if (!state_to(req, NET_SENDING_STATUS)) {
+				req_del(req->net_fd);
+			}
+			return -1;
+		}
+		/* if write was blocking, retry later */
+		if (ret == -EAGAIN)
+			return -1;
+
+		do {
+			char buf[BUFSIZ];
+			int len;
+
+			dirent = readdir(handler_priv->dir);
+			if (!dirent)
+				break;
+
+			len = sprintf(buf, "<a href=\"%s\">%s</a><br>", dirent->d_name, dirent->d_name);
+			ret = write(req->net_fd, buf, len);
+		} while (handler_priv->dir && ret != -EAGAIN);
+		if (!dirent) {
+			char dir_footer[] = "</body></html>";
+			ret = write(req->net_fd, dir_footer, sizeof(dir_footer));
+			if (ret == -EAGAIN)
+				return -1;
+			req_del(req->net_fd);
+		}
+	}
+	return 0;
+}
+
+void file_handler_cleanup(struct request *req)
+{
+	struct file_handler_priv *handler_priv = req->priv;
+
+	if (!req->priv)
+		return;
+
+	closedir(handler_priv->dir);
+}
+
+struct handler file_handler = {
+	.main = file_handler_main,
+	.cleanup = file_handler_cleanup
+};
+
+struct handler *get_handler_from(const char *url)
+{
+	(void)url;
+
+	return &file_handler;
+}
+
 /**
  * @brief state == NET_RECEIVING procedure
  *
@@ -274,9 +358,9 @@ static void process_net_receiving(struct request *req)
 	req->request_size += ret;
 
 	/* is request too long ? */
-	if (req->request_size > config.max_request_size) {
+	if (req->request_size > MAX_REQUEST_SIZE) {
 		/* too long: inform the client */
-		req->http_code = Bad_Request;
+		req->response->http_code = Bad_Request;
 		if (!state_to(req, NET_SENDING_STATUS)) {
 			req_del(req->net_fd);
 		}
@@ -285,8 +369,8 @@ static void process_net_receiving(struct request *req)
 	/* is that a full request? if yes try to parse it */
 	if (req->request_size > CRLF_LEN
 	    && !memcmp(&req->request[req->request_size-CRLF_LEN], CRLF, CRLF_LEN)) {
-		char *url, *path = NULL;
-		enum url_type type;
+		char *url = NULL;
+		struct handler *handler;
 
 		if (!state_to(req, NET_SENDING_STATUS)) {
 			req_del(req->net_fd);
@@ -298,14 +382,11 @@ static void process_net_receiving(struct request *req)
 			return;
 
 
-		type = get_type_from_url(url);
-		switch (type) {
-		case LOCAL_FS_REQ:
-			path = url_to_path(url);
-			open_local_file(req, path);
-			free(path);
-		}
+		handler = get_handler_from(url);
+		handler->main(req);
+
 		free(url);
+
 		return;
 	} else {
 		/* not a request, continue */
@@ -326,16 +407,9 @@ static void process_net_receiving(struct request *req)
  **/
 static void process_net_sending_status(struct request *req)
 {
-	int size, ret;
-	const char *status;
-	status = build_status_line(req->http_code, &size);
-	ret = write(req->net_fd, status, size);
-	if (ret < 0) {
-		logm(ERROR, ERRNO, "write");
-		req_del(req->net_fd);
-		return;
-	}
-	if (req->http_code != OK) {
+	req->response->status = build_status_line(req->response->http_code);
+	if (req->response->http_code != OK) {
+		req_flush(req);
 		req_del(req->net_fd);
 		return;
 	}
@@ -368,54 +442,7 @@ static void process_net_sending_headers(struct request *req)
  **/
 static void process_net_sending(struct request *req)
 {
-	int ret;
-
-	if (req->resp_type == LOCAL_FILE) {
-		ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
-		if (ret <= 0) {
-			req_del(req->net_fd);
-			return;
-		}
-	} else {
-		struct dirent *dirent;
-
-		if (!req->dir) {
-			char dir_header[] = "<html><body>";
-			ret = write(req->net_fd, dir_header, sizeof(dir_header));
-		}
-
-		DIR *fdopendir(int fd);
-		req->dir = fdopendir(req->fs_fd);
-		if (!req->dir) {
-			req->http_code = Internal_Server_Error;
-			if (!state_to(req, NET_SENDING_STATUS)) {
-				req_del(req->net_fd);
-			}
-			return;
-		}
-		/* if write was blocking, retry later */
-		if (ret == -EAGAIN)
-			return;
-
-		do {
-			char buf[BUFSIZ];
-			int len;
-
-			dirent = readdir(req->dir);
-			if (!dirent)
-				break;
-
-			len = sprintf(buf, "<a href=\"%s\">%s</a><br>", dirent->d_name, dirent->d_name);
-			ret = write(req->net_fd, buf, len);
-		} while (req->dir && ret != -EAGAIN);
-		if (!dirent) {
-			char dir_footer[] = "</body></html>";
-			ret = write(req->net_fd, dir_footer, sizeof(dir_footer));
-			if (ret == -EAGAIN)
-				return;
-			req_del(req->net_fd);
-		}
-	}
+	(void)req;
 }
 
 /**
@@ -471,12 +498,70 @@ static void process_new_client(int server, int poll_fd)
 	req->request_size = 0;
 	req->last_accessed = now;
 	req->poll_fd = poll_fd;
-	req->dir = NULL;
 	req->peer_addr = client_addr;
 	req_add(req);
 }
 
-int main()
+struct extended_options {
+	struct option opt;
+	char *help;
+};
+
+void usage(char **argv, struct extended_options *o)
+{
+	fprintf(stderr, "Usage: %s\n", argv[0]);
+	while (o->help) {
+		fprintf(stderr, "\t--%-15s: %-30s\n", o->opt.name, o->help);
+		o++;
+	}
+}
+
+int parse_cmdline(char **argv, int argc, struct configuration *config)
+{
+	int c;
+
+	while (1) {
+		int option_index = 0;
+		struct extended_options long_options[] = {
+			{ { "port", 1, 0, 'p'}, 	"port to listen to" },
+			{ { "bind_address", 1, 0, 'b'},	"IP address to bind to" },
+			{ { "root_dir", 1, 0, 'r'}, 	"web server root dir" },
+			{ { "help", 0, 0, 'h'}, 	"this help" },
+			{ { 0, 0, 0, 0}, NULL }
+		};
+
+		c = getopt_long(argc, argv, "p:b:r:h",
+				(struct option *)long_options, &option_index);
+		if (c == -1)
+			break;
+
+		switch (c) {
+		case 'p':
+			config->port = atoi(optarg);
+			break;
+
+		case 'b':
+			strncpy(config->bind_address,
+				optarg, sizeof(config->bind_address) - 1);
+			break;
+
+		case 'r':
+			strncpy(config->root_dir,
+				optarg, sizeof(config->root_dir) - 1);
+			break;
+
+		case 'h':
+		default:
+			usage(argv, long_options);
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+
+int main(int argc, char **argv)
 {
 	int ret, optval;
 	int server;
@@ -486,6 +571,10 @@ int main()
 	int maxevents = 512;
 	int poll_fd;
 	time_t last_gc;
+
+	ret = parse_cmdline(argv, argc, &config);
+	if (ret < 0)
+		exit(EXIT_FAILURE);
 
 	log_init();
 	chdir(config.root_dir);
