@@ -115,7 +115,7 @@ out:
  * @param req the request from which the URL need to be extracted
  *
  * @return the successfully extracted URL (needs to be freed), or NULL
- *	   also req->response->code is set appropriately
+ *	   also req->response.code is set appropriately
  **/
 __attribute__((warn_unused_result))
 static char *parse_url(struct request *req)
@@ -124,15 +124,15 @@ static char *parse_url(struct request *req)
 	unsigned int minimal_url_len = 5 + CRLF_LEN; /* "GET /" + CRLF */
 	char *p, *url;
 
-	req->response->http_code = OK;
+	req->response.http_code = OK;
 
 	/* some sanity checks */
 	if (req->request_size < minimal_url_len) {
-		req->response->http_code = Bad_Request;
+		req->response.http_code = Bad_Request;
 		return NULL;
 	}
 	if (memcmp("GET ", req->request, 4)) {
-		req->response->http_code = Not_Implemented;
+		req->response.http_code = Not_Implemented;
 		return NULL;
 	}
 
@@ -144,7 +144,7 @@ static char *parse_url(struct request *req)
 	}
 	url = malloc(i + 1);
 	if (!url) {
-		req->response->http_code = Internal_Server_Error;
+		req->response.http_code = Internal_Server_Error;
 		return NULL;
 	}
 
@@ -169,9 +169,6 @@ static int state_to(struct request *req, enum req_state new_state)
 
 	switch (new_state) {
 	case NET_SENDING:
-		assert(req->state == NET_SENDING_STATUS);
-		break;
-	case NET_SENDING_STATUS:
 		assert(req->state == NET_RECEIVING);
 		ev.events = EPOLLOUT;
 		ev.data.fd = req->net_fd;
@@ -239,13 +236,13 @@ static int open_local_file(struct request *req, const char *path)
 err:
 	switch (errno) {
 	case ENOENT:
-		req->response->http_code = Not_Found;
+		req->response.http_code = Not_Found;
 		break;
 	case EACCES:
-		req->response->http_code = Forbidden;
+		req->response.http_code = Forbidden;
 		break;
 	default:
-		req->response->http_code = Internal_Server_Error;
+		req->response.http_code = Internal_Server_Error;
 	}
 	return 0;
 }
@@ -262,8 +259,18 @@ int file_handler_main(struct request *req)
 
 	handler_priv = req->priv;
 
-	path = url_to_path(string_charstar(&req->url));
-	open_local_file(req, path);
+	path = url_to_path(string_charstar(req->url));
+
+	if (!open_local_file(req, path)) {
+		req->handler = NULL;
+		return -1;
+	}
+
+	req->response.status = build_status_line(req->response.http_code);
+	if (req->response.http_code != OK) {
+		req->handler = NULL;
+		return -1;
+	}
 
 	if (handler_priv->resp_type == LOCAL_FILE) {
 		ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
@@ -279,10 +286,8 @@ int file_handler_main(struct request *req)
 
 		handler_priv->dir = fdopendir(req->fs_fd);
 		if (!handler_priv->dir) {
-			req->response->http_code = Internal_Server_Error;
-			if (!state_to(req, NET_SENDING_STATUS)) {
-				req_del(req->net_fd);
-			}
+			req->response.http_code = Internal_Server_Error;
+			req->handler = NULL;
 			return -1;
 		}
 		/* if write was blocking, retry later */
@@ -350,6 +355,7 @@ static void process_net_receiving(struct request *req)
 		req_del(req->net_fd);
 		return;
 	}
+
 	/* remote peer unexpectedly closed the connection */
 	if (ret <= 0) {
 		req_del(req->net_fd);
@@ -360,8 +366,8 @@ static void process_net_receiving(struct request *req)
 	/* is request too long ? */
 	if (req->request_size > MAX_REQUEST_SIZE) {
 		/* too long: inform the client */
-		req->response->http_code = Bad_Request;
-		if (!state_to(req, NET_SENDING_STATUS)) {
+		req->response.http_code = Bad_Request;
+		if (!state_to(req, NET_SENDING)) {
 			req_del(req->net_fd);
 		}
 		return;
@@ -370,9 +376,8 @@ static void process_net_receiving(struct request *req)
 	if (req->request_size > CRLF_LEN
 	    && !memcmp(&req->request[req->request_size-CRLF_LEN], CRLF, CRLF_LEN)) {
 		char *url = NULL;
-		struct handler *handler;
 
-		if (!state_to(req, NET_SENDING_STATUS)) {
+		if (!state_to(req, NET_SENDING)) {
 			req_del(req->net_fd);
 			return;
 		}
@@ -381,11 +386,8 @@ static void process_net_receiving(struct request *req)
 		if (!url)
 			return;
 
-
-		handler = get_handler_from(url);
-		handler->main(req);
-
-		free(url);
+		req->handler = get_handler_from(url);
+		req->url = string_new(url);
 
 		return;
 	} else {
@@ -399,41 +401,7 @@ static void process_net_receiving(struct request *req)
 	}
 }
 
-/**
- * @brief state == NET_SENDING_STATUS process:
- * Send the header corresponding to the http_code
- *
- * @param req the request being serviced
- **/
-static void process_net_sending_status(struct request *req)
-{
-	req->response->status = build_status_line(req->response->http_code);
-	if (req->response->http_code != OK) {
-		req_flush(req);
-		req_del(req->net_fd);
-		return;
-	}
 
-	if (!state_to(req, NET_SENDING))
-		req_del(req->net_fd);
-
-}
-
-/**
- * @brief state == NET_SENDING_HEADERS process: read the local file and send it
- * over the socket
- *
- * @param req the request being serviced
- **/
-static void process_net_sending_headers(struct request *req)
-{
-	int ret;
-
-	ret = write(req->net_fd, "", sizeof(""));
-	if (ret == -EAGAIN)
-		return;
-	//req_del(req->net_fd);
-}
 /**
  * @brief state == NET_SENDING process: read the local file and send it
  * over the socket
@@ -442,7 +410,12 @@ static void process_net_sending_headers(struct request *req)
  **/
 static void process_net_sending(struct request *req)
 {
-	(void)req;
+	if (req->handler) {
+		req->handler->main(req);
+	} else {
+		write(req->net_fd, req->response.status.str, req->response.status.len);
+		req_del(req->net_fd);
+	}
 }
 
 /**
@@ -495,6 +468,7 @@ static void process_new_client(int server, int poll_fd)
 	req->fs_fd = 0;
 	req->state = NET_RECEIVING;
 	req->request = malloc(BUFSIZ);
+	req->handler = NULL;
 	req->request_size = 0;
 	req->last_accessed = now;
 	req->poll_fd = poll_fd;
@@ -674,12 +648,6 @@ int main(int argc, char **argv)
 				switch (req->state) {
 				case NET_RECEIVING:
 					process_net_receiving(req);
-					break;
-				case NET_SENDING_STATUS:
-					process_net_sending_status(req);
-					break;
-				case NET_SENDING_HEADERS:
-					process_net_sending_headers(req);
 					break;
 				case NET_SENDING:
 					process_net_sending(req);

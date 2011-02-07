@@ -10,13 +10,13 @@ struct string *string_new(const char *str)
 	size_t len;
 
 	len = strlen(str);
-	
+
 	s = malloc(sizeof(*s) + len);
 	if (!s)
 		return NULL;
 	s->len = len;
 	s->null_terminated = true;
-	strcpy(s->str, str);
-	
+	s->str = strdup(str);
+
 	return s;
 }

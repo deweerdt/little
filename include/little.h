@@ -26,10 +26,6 @@ struct configuration {
 enum req_state {
 	/** client socket just accepted, or receiving a request */
 	NET_RECEIVING,
-	/** request received, send status*/
-	NET_SENDING_STATUS,
-	/** status sent, send headers */
-	NET_SENDING_HEADERS,
 	/** headers sent, response started */
 	NET_SENDING,
 };

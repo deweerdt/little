@@ -22,8 +22,8 @@ struct request {
 	enum req_state state;			/* the state of the request */
 	time_t last_accessed;			/* last time said socket was accessed */
 	struct sockaddr_in peer_addr;		/* peer's address */
-	struct response *response;
-	struct string url;
+	struct response response;
+	struct string *url;
 	struct handler *handler;
 	void *priv;
 };

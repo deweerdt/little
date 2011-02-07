@@ -28,8 +28,23 @@ void req_flush(struct request *req)
 	return;
 }
 
+char *req_addr_to_txt(struct request *req)
+{
+	static __thread char txt[256];
+	char addr_txt[256];
+	const char *res;
+
+	res = inet_ntop(AF_INET, &req->peer_addr.sin_addr,
+			addr_txt, sizeof(addr_txt));
+	snprintf(txt, sizeof(txt), "%15s:%05d", res, ntohs(req->peer_addr.sin_port));
+
+	return txt;
+}
+
 void req_del(int fd)
 {
+	logm(INFO, NONE, "<- connection: peer: [%s]", req_addr_to_txt(reqs[fd]));
+
 	if (reqs[fd]->fs_fd > 0) {
 		close(reqs[fd]->fs_fd);
 	}
@@ -42,6 +57,7 @@ void req_del(int fd)
 	free(reqs[fd]->request);
 	free(reqs[fd]);
 	reqs[fd] = NULL;
+
 }
 
 void req_garbage_collect(time_t now, int timeout)
@@ -56,22 +72,9 @@ void req_garbage_collect(time_t now, int timeout)
 	}
 }
 
-char *req_addr_to_txt(struct request *req)
-{
-	static __thread char txt[256];
-	char addr_txt[256];
-	const char *res;
-
-	res = inet_ntop(AF_INET, &req->peer_addr.sin_addr,
-			addr_txt, sizeof(addr_txt));
-	snprintf(txt, sizeof(txt), "%15s:%05d", res, ntohs(req->peer_addr.sin_port));
-
-	return txt;
-}
-
 void req_add(struct request *req)
 {
-	logm(INFO, NONE, "New connection: peer: [%s]", req_addr_to_txt(req));
+	logm(INFO, NONE, "-> connection: peer: [%s]", req_addr_to_txt(req));
 	reqs[req->net_fd] = req;
 }
 

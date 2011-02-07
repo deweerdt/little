@@ -15,4 +15,7 @@ static inline char *string_charstar(struct string *s)
 	return s->str;
 }
 
+struct string *string_new(const char *str);
+
+
 #endif /* __STRING_H__ */
