@@ -1,7 +1,11 @@
 #include <stdlib.h>
 #include <unistd.h>
+#include <stdio.h>
 #include <assert.h>
+#include <arpa/inet.h>
 
+#include "hash.h"
+#include "log.h"
 #include "little.h"
 #include "requests.h"
 
@@ -44,8 +48,22 @@ void req_garbage_collect(time_t now, int timeout)
 	}
 }
 
+char *req_addr_to_txt(struct request *req)
+{
+	static __thread char txt[256];
+	char addr_txt[256];
+	const char *res;
+
+	res = inet_ntop(AF_INET, &req->peer_addr.sin_addr,
+			addr_txt, sizeof(addr_txt));
+	snprintf(txt, sizeof(txt), "%15s:%05d", res, ntohs(req->peer_addr.sin_port));
+
+	return txt;
+}
+
 void req_add(struct request *req)
 {
+	logm(INFO, NONE, "New connection: peer: [%s]", req_addr_to_txt(req));
 	reqs[req->net_fd] = req;
 }
 

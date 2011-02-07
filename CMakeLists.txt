@@ -8,7 +8,10 @@ ADD_TEST(HugeFile ${CMAKE_SOURCE_DIR}/tests/huge_ab)
 ADD_TEST(Test404 ${CMAKE_SOURCE_DIR}/tests/404_ab)
 ADD_TEST(Test403 ${CMAKE_SOURCE_DIR}/tests/403_ab)
 
-ADD_EXECUTABLE(little little.c requests.c)
+ADD_EXECUTABLE(little little.c requests.c log.c hash.c)
+ADD_EXECUTABLE(hash_test hash_test.c hash.c)
+
+ADD_TEST(utest_hash ${CMAKE_BINARY_DIR}/hash_test)
 
 OPTION(PROFILE ON)
 IF(PROFILE)
@@ -16,5 +19,5 @@ IF(PROFILE)
 	TARGET_LINK_LIBRARIES(little gcov)
 ENDIF(PROFILE)
 
-TARGET_LINK_LIBRARIES(little pthread)
-ADD_DEFINITIONS(-Wall -Wextra -g -O0 ${PROF_OPT})
+TARGET_LINK_LIBRARIES(little pthread jemalloc)
+ADD_DEFINITIONS(-D_GNU_SOURCE -Wall -Wextra -g -O0 ${PROF_OPT})

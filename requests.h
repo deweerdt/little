@@ -4,19 +4,21 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <stdint.h>
+#include <netinet/in.h>
 
 struct request {
-	int net_fd;			/* the socket file descriptor */
-	int fs_fd;			/* the local file associated with the request */
-	DIR *dir;			/* If the request is a DIR */
-	off_t fs_fd_offset;		/* the current local fs_fd offset */
-	int poll_fd;			/* the poll fd that monitors the socket fd */
-	uint8_t *request;		/* a buffer holding the recieved request */
-	unsigned int request_size;	/* the size of date hold by request */
-	enum req_state state;		/* the state of the request */
-	time_t last_accessed;		/* last time said socket was accessed */
-	enum http_response_code http_code; /* the http response code */
-	enum resp_type resp_type;	/* the type of the response (file, dir) */
+	int net_fd;				/* the socket file descriptor */
+	int fs_fd;				/* the local file associated with the request */
+	DIR *dir;				/* If the request is a DIR */
+	off_t fs_fd_offset;			/* the current local fs_fd offset */
+	int poll_fd;				/* the poll fd that monitors the socket fd */
+	uint8_t *request;			/* a buffer holding the recieved request */
+	unsigned int request_size;		/* the size of date hold by request */
+	enum req_state state;			/* the state of the request */
+	time_t last_accessed;			/* last time said socket was accessed */
+	enum http_response_code http_code; 	/* the http response code */
+	enum resp_type resp_type;		/* the type of the response (file, dir) */
+	struct sockaddr_in peer_addr;		/* peer's address */
 };
 
 /**

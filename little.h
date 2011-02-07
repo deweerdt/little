@@ -37,7 +37,9 @@ enum req_state {
 	NET_RECEIVING,
 	/** request received, send status*/
 	NET_SENDING_STATUS,
-	/** status sent, response started */
+	/** status sent, send headers */
+	NET_SENDING_HEADERS,
+	/** headers sent, response started */
 	NET_SENDING,
 };
 

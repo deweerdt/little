@@ -1,5 +1,3 @@
-#define __USE_GNU
-
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
@@ -21,12 +19,13 @@
 
 #include "http.h"
 #include "little.h"
+#include "log.h"
 #include "requests.h"
 
 static struct configuration config = {	.port = 8080,
 					.bind_address = "0.0.0.0",
 					.max_request_size = 16384,
-					.root_dir = "/tmp/html",
+					.root_dir = "/home/def/p/my_projects/little/tests",
 					.socket_timeout = 3 };
 
 /**
@@ -94,7 +93,7 @@ static const char *build_status_line(enum http_response_code code, int *size)
 		*size = STR_501_LEN;
 		break;
 	default:
-		fprintf(stderr, "unknown error code %d\n", code);
+		logm(CRITICAL, NONE, "unknown error code %d\n", code);
 		assert(0);
 	}
 	return ret;
@@ -237,12 +236,12 @@ static int state_to(struct request *req, enum req_state new_state)
 		ev.events = EPOLLOUT;
 		ev.data.fd = req->net_fd;
 		if (epoll_ctl(req->poll_fd, EPOLL_CTL_MOD, req->net_fd, &ev) < 0) {
-			perror("epoll_ctl mod");
+			logm(ERROR, ERRNO, "epoll_ctl mod");
 			return 0;
 		}
 		break;
 	default:
-		fprintf(stderr, "Unknown state %d\n", new_state);
+		logm(CRITICAL, NONE, "Unknown state %d\n", new_state);
 		assert(0);
 	}
 
@@ -263,7 +262,7 @@ static void process_net_receiving(struct request *req)
 
 	ret = read(req->net_fd, req->request + req->request_size, BUFSIZ);
 	if (ret < 0) {
-		perror("read");
+		logm(ERROR, ERRNO, "read");
 		req_del(req->net_fd);
 		return;
 	}
@@ -312,7 +311,7 @@ static void process_net_receiving(struct request *req)
 		/* not a request, continue */
 		req->request = realloc(req->request, req->request_size + BUFSIZ);
 		if (!req->request) {
-			perror("realloc");
+			logm(ERROR, ERRNO, "realloc");
 			req_del(req->net_fd);
 			return;
 		}
@@ -332,7 +331,7 @@ static void process_net_sending_status(struct request *req)
 	status = build_status_line(req->http_code, &size);
 	ret = write(req->net_fd, status, size);
 	if (ret < 0) {
-		perror("write");
+		logm(ERROR, ERRNO, "write");
 		req_del(req->net_fd);
 		return;
 	}
@@ -346,6 +345,21 @@ static void process_net_sending_status(struct request *req)
 
 }
 
+/**
+ * @brief state == NET_SENDING_HEADERS process: read the local file and send it
+ * over the socket
+ *
+ * @param req the request being serviced
+ **/
+static void process_net_sending_headers(struct request *req)
+{
+	int ret;
+
+	ret = write(req->net_fd, "", sizeof(""));
+	if (ret == -EAGAIN)
+		return;
+	//req_del(req->net_fd);
+}
 /**
  * @brief state == NET_SENDING process: read the local file and send it
  * over the socket
@@ -422,32 +436,32 @@ static void process_new_client(int server, int poll_fd)
 	client = accept(server, (struct sockaddr *)&client_addr,
 			&addrlen);
 	if (client < 0) {
-		perror("accept");
+		logm(ERROR, ERRNO, "accept");
 		return;
 	}
 
 	flags = fcntl(client, F_GETFL, 0);
 	if (flags < 0) {
-		perror("fcntl 1");
+		logm(ERROR, ERRNO, "fcntl 1");
 		return;
 	}
 
 
 	if (fcntl(client, F_SETFL, flags | O_NONBLOCK) < 0) {
-		perror("fcntl 2");
+		logm(ERROR, ERRNO, "fcntl 2");
 		return;
 	}
 
 	ev.events = EPOLLIN | EPOLLPRI;
 	ev.data.fd = client;
 	if (epoll_ctl(poll_fd, EPOLL_CTL_ADD, client, &ev) < 0) {
-		perror("epoll_ctrl add");
+		logm(ERROR, ERRNO, "epoll_ctrl add");
 		return;
 	}
 
 	req = malloc(sizeof(struct request));
 	if (!req) {
-		perror("malloc");
+		logm(ERROR, ERRNO, "malloc");
 		return;
 	}
 	req->net_fd = client;
@@ -458,6 +472,7 @@ static void process_new_client(int server, int poll_fd)
 	req->last_accessed = now;
 	req->poll_fd = poll_fd;
 	req->dir = NULL;
+	req->peer_addr = client_addr;
 	req_add(req);
 }
 
@@ -472,10 +487,11 @@ int main()
 	int poll_fd;
 	time_t last_gc;
 
+	log_init();
 	chdir(config.root_dir);
 
 	if (!req_init()) {
-		perror("Cannot init internal memory");
+		logm(ERROR, ERRNO, "Cannot init internal memory");
 		exit(1);
 	}
 
@@ -484,13 +500,13 @@ int main()
 
 	ret = pthread_create(&timethread, NULL, time_thread, NULL);
 	if (ret) {
-		perror("pthread_create");
+		logm(ERROR, ERRNO, "pthread_create");
 		exit(1);
 	}
 
 	server = socket(PF_INET, SOCK_STREAM, IPPROTO_IP);
 	if (server < 0) {
-		perror("Cannot create socket");
+		logm(ERROR, ERRNO, "Cannot create socket");
 		exit(1);
 	}
 	server_addr.sin_family = AF_INET;
@@ -500,31 +516,31 @@ int main()
 	optval = 1;
 	ret = setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 	if (ret < 0) {
-		perror("setsockopt");
+		logm(ERROR, ERRNO, "setsockopt");
 		exit(1);
 	}
 
 
 	ret = bind(server, (struct sockaddr *)&server_addr, sizeof(server_addr));
 	if (ret < 0) {
-		perror("Cannot bind");
+		logm(ERROR, ERRNO, "Cannot bind");
 		exit(1);
 	}
 
 	ret = listen(server, 128);
 	if (ret < 0) {
-		perror("Cannot listen");
+		logm(ERROR, ERRNO, "Cannot listen");
 		exit(1);
 	}
 
 	events = calloc(1, maxevents * sizeof(struct epoll_event));
 	if (!events) {
-		perror("Initial malloc failed");
+		logm(ERROR, ERRNO, "Initial malloc failed");
 		exit(1);
 	}
 	poll_fd = epoll_create(maxevents);
 	if (poll_fd < 0) {
-		perror("epoll_create");
+		logm(ERROR, ERRNO, "epoll_create");
 		exit(1);
 	}
 
@@ -532,7 +548,7 @@ int main()
 	ev.data.fd = server;
 	ret = epoll_ctl(poll_fd, EPOLL_CTL_ADD, server, &ev);
 	if (ret < 0) {
-		perror("epoll_ctl");
+		logm(ERROR, ERRNO, "epoll_ctl");
 		exit(1);
 	}
 
@@ -572,6 +588,9 @@ int main()
 					break;
 				case NET_SENDING_STATUS:
 					process_net_sending_status(req);
+					break;
+				case NET_SENDING_HEADERS:
+					process_net_sending_headers(req);
 					break;
 				case NET_SENDING:
 					process_net_sending(req);
