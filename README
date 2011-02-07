@@ -1,16 +1,8 @@
 Dependencies
 ============
-To be built, you'll need to have the following software installed
-(archlinux packages):
+To build from source, you'll need to have the following software installed
 * cmake
-* file
-* openssl
-
-For the record, little has been tested with:
-* cmake 2.4.8
-* file 4.23
-* openssl 0.9.8g
-* gcc 4.3.0
+* jemalloc
 
 Tests
 =====
