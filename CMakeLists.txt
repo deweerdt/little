@@ -8,8 +8,8 @@ ADD_TEST(HugeFile ${CMAKE_SOURCE_DIR}/tests/huge_ab)
 ADD_TEST(Test404 ${CMAKE_SOURCE_DIR}/tests/404_ab)
 ADD_TEST(Test403 ${CMAKE_SOURCE_DIR}/tests/403_ab)
 
-ADD_EXECUTABLE(little little.c requests.c log.c hash.c)
-ADD_EXECUTABLE(hash_test hash_test.c hash.c)
+ADD_EXECUTABLE(little src/little.c src/requests.c src/log.c src/hash.c)
+ADD_EXECUTABLE(hash_test src/hash_test.c src/hash.c)
 
 ADD_TEST(utest_hash ${CMAKE_BINARY_DIR}/hash_test)
 
