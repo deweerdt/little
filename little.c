@@ -11,13 +11,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
-#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include <ev.h>
 
 #include "http.h"
 #include "little.h"
@@ -215,6 +214,27 @@ err:
 	return 0;
 }
 
+void req_cb(struct ev_loop *loop, struct ev_io *watcher, int events);
+
+static int net_listen_for_in_events(struct request *req)
+{
+	struct ev_io *w_client;
+
+	(void)req;
+
+	w_client = (struct ev_io*) malloc (sizeof(struct ev_io));
+
+	ev_io_init(w_client, req_cb, req->net_fd, EV_READ);
+	ev_io_start(req->loop, w_client);
+
+	return 0;
+}
+
+static int net_listen_for_out_events(struct request *req)
+{
+	(void)req;
+	return 0;
+}
 /**
  * @brief Switch the state of the request.
  *
@@ -226,7 +246,6 @@ err:
  __attribute__((warn_unused_result))
 static int state_to(struct request *req, enum req_state new_state)
 {
-	static struct epoll_event ev;
 
 	switch(new_state) {
 		case NET_SENDING:
@@ -234,12 +253,7 @@ static int state_to(struct request *req, enum req_state new_state)
 			break;
 		case NET_SENDING_STATUS:
 			assert(req->state == NET_RECEIVING);
-			ev.events = EPOLLOUT;
-			ev.data.fd = req->net_fd;
-			if (epoll_ctl(req->poll_fd, EPOLL_CTL_MOD, req->net_fd, &ev) < 0) {
-				perror("epoll_ctl mod");
-				return 0;
-			}
+			net_listen_for_out_events(req);
 			break;
 		default:
 			fprintf(stderr, "Unknown state %d\n", new_state);
@@ -255,7 +269,7 @@ static int state_to(struct request *req, enum req_state new_state)
  *
  * @param req the request being serviced
  *
- * @return 
+ * @return
  **/
 static void process_net_receiving(struct request *req)
 {
@@ -320,10 +334,10 @@ static void process_net_receiving(struct request *req)
 }
 
 /**
- * @brief state == NET_SENDING_STATUS process: 
+ * @brief state == NET_SENDING_STATUS process:
  * Send the header corresponding to the http_code
  *
- * @param req the request being serviced 
+ * @param req the request being serviced
  **/
 static void process_net_sending_status(struct request *req)
 {
@@ -346,22 +360,43 @@ static void process_net_sending_status(struct request *req)
 
 }
 
+#if !defined(__linux__)
+/* Solaris function missing on Darwin.  Temporary workaround to allow building.
+ * Ref http://mail.openjdk.java.net/pipermail/bsd-po...
+ */
+static DIR* fake_fdopendir(int dfd)
+{
+	(void)dfd;
+	errno = ENOSYS;
+	return NULL;
+}
+#define fdopendir fake_fdopendir
+#endif
+
 /**
  * @brief state == NET_SENDING process: read the local file and send it
  * over the socket
  *
- * @param req the request being serviced 
+ * @param req the request being serviced
  **/
 static void process_net_sending(struct request *req)
 {
 	int ret;
 
 	if (req->resp_type == LOCAL_FILE) {
-		ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
+		char buf[BUFSIZ];
+		ret = read(req->fs_fd, buf, sizeof(buf));
 		if (ret <= 0) {
-			req_del(req->net_fd);
-			return;
+			goto del_fd;
 		}
+		ret = write(req->net_fd, buf, ret);
+		if (ret <= 0) {
+			goto del_fd;
+		}
+		return;
+del_fd:
+		req_del(req->net_fd);
+		return;
 	} else {
 		struct dirent *dirent;
 
@@ -407,16 +442,14 @@ static void process_net_sending(struct request *req)
 /**
  * @brief Called upon receiving a new incoming connection
  *
- * @param server the server socket to accept from 
- * @param poll_fd the epoll fd to add the new client to 
+ * @param server the server socket to accept from
  **/
-static void process_new_client(int server, int poll_fd)
+static void process_new_client(struct ev_loop *loop, int server)
 {
 	struct sockaddr_in client_addr;
-	size_t addrlen;
+	unsigned int addrlen;
 	int flags, client;
 	struct request *req;
-	static struct epoll_event ev;
 
 	addrlen = sizeof(client_addr);
 	client = accept(server, (struct sockaddr *)&client_addr,
@@ -437,13 +470,6 @@ static void process_new_client(int server, int poll_fd)
 		return;
 	}
 
-	ev.events = EPOLLIN | EPOLLPRI;
-	ev.data.fd = client;
-	if (epoll_ctl(poll_fd, EPOLL_CTL_ADD, client, &ev) < 0) {
-		perror("epoll_ctrl add");
-		return;
-	}
-
 	req = malloc(sizeof(struct request));
 	if (!req) {
 		perror("malloc");
@@ -451,25 +477,63 @@ static void process_new_client(int server, int poll_fd)
 	}
 	req->net_fd = client;
 	req->fs_fd = 0;
+	req->loop = loop;
 	req->state = NET_RECEIVING;
 	req->request = malloc(BUFSIZ);
 	req->request_size = 0;
 	req->last_accessed = now;
-	req->poll_fd = poll_fd;
 	req->dir = NULL;
+
+	net_listen_for_in_events(req);
+
 	req_add(req);
 }
 
-int main()
+void req_cb(struct ev_loop *loop, struct ev_io *watcher, int events)
+{
+	struct request *req;
+
+	(void)loop;
+	(void)events;
+
+	req = req_get_from_net_fd(watcher->fd);
+	//assert(req);
+	if (!req)
+		return;
+
+	req->last_accessed = now;
+
+	switch(req->state) {
+		case NET_RECEIVING:
+			process_net_receiving(req);
+			break;
+		case NET_SENDING_STATUS:
+			process_net_sending_status(req);
+			break;
+		case NET_SENDING:
+			process_net_sending(req);
+			break;
+		default:
+			assert(0);
+	}
+}
+
+
+void accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
+{
+	(void)revents;
+	process_new_client(loop, watcher->fd);
+}
+
+int main(void)
 {
 	int ret, optval;
 	int server;
 	struct sockaddr_in server_addr;
-	static struct epoll_event ev;
-       	struct epoll_event *events;
-	int maxevents = 512;
-	int poll_fd;
 	time_t last_gc;
+	struct ev_loop *loop;
+	struct ev_io fd_pool;
+
 
 	chdir(config.root_dir);
 
@@ -516,70 +580,19 @@ int main()
 		exit(1);
 	}
 
-	events = calloc(1, maxevents * sizeof(struct epoll_event));
-	if (!events) {
-		perror("Initial malloc failed");
-		exit(1);
-	}
-	poll_fd = epoll_create(maxevents);
-	if (poll_fd < 0) {
-		perror("epoll_create");
-		exit(1);
-	}
-
-	ev.events = EPOLLIN | EPOLLPRI;
-	ev.data.fd = server;
-	ret = epoll_ctl(poll_fd, EPOLL_CTL_ADD, server, &ev);
-	if (ret < 0) {
-		perror("epoll_ctl");
-		exit(1);
-	}
+	loop = ev_default_loop(0);
+	ev_io_init(&fd_pool, accept_cb, server, EV_READ);
+	ev_io_start(loop, &fd_pool);
 
 	last_gc = now;
+
 	do {
-		int n;
-		int nfds;
-
-		nfds = epoll_wait(poll_fd, events, maxevents, config.socket_timeout * 1000);
-
 		/* is it time to gargabe collect ? */
 		if (difftime(now, last_gc) > config.socket_timeout) {
 			req_garbage_collect(now, config.socket_timeout);
 			last_gc = now;
 		}
-
-		for (n = 0; n < nfds; ++n) {
-			if (events[n].data.fd == server) {
-				process_new_client(server, poll_fd);
-			} else {
-				struct request *req;
-
-				req = req_get_from_net_fd(events[n].data.fd);
-				assert(req);
-
-				/* check the sanity of the file descriptor */
-				if (events[n].events & EPOLLERR || events[n].events & EPOLLHUP) {
-					req_del(req->net_fd);
-					continue;
-				}
-
-				req->last_accessed = now;
-
-				switch(req->state) {
-					case NET_RECEIVING:
-						process_net_receiving(req);
-						break;
-					case NET_SENDING_STATUS:
-						process_net_sending_status(req);
-						break;
-					case NET_SENDING:
-						process_net_sending(req);
-						break;
-					default:
-						assert(0);
-				}
-			}
-		}
+		ev_loop(loop, 0);
 	} while (1);
 
 	return ret;

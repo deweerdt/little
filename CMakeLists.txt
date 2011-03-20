@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 2.8)
+
 ENABLE_TESTING()
 
 ADD_TEST(FunkyUrls ${CMAKE_SOURCE_DIR}/tests/funky_urls aze)
@@ -15,5 +17,5 @@ IF(PROFILE)
 	TARGET_LINK_LIBRARIES(little gcov)	
 ENDIF(PROFILE)
 
-TARGET_LINK_LIBRARIES(little pthread)
+TARGET_LINK_LIBRARIES(little pthread ev)
 ADD_DEFINITIONS(-Wall -Wextra -g -O0 ${PROF_OPT})
