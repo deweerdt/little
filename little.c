@@ -220,8 +220,6 @@ static int net_listen_for_in_events(struct request *req)
 {
 	struct ev_io *w_client;
 
-	(void)req;
-
 	w_client = (struct ev_io*) malloc (sizeof(struct ev_io));
 
 	ev_io_init(w_client, req_cb, req->net_fd, EV_READ);
@@ -232,7 +230,13 @@ static int net_listen_for_in_events(struct request *req)
 
 static int net_listen_for_out_events(struct request *req)
 {
-	(void)req;
+	struct ev_io *w_client;
+
+	w_client = (struct ev_io*) malloc (sizeof(struct ev_io));
+
+	ev_io_init(w_client, req_cb, req->net_fd, EV_WRITE);
+	ev_io_start(req->loop, w_client);
+
 	return 0;
 }
 /**
