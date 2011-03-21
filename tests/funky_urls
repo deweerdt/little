@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-use IO::Socket; 
+use IO::Socket;
 @urls = ( "Whaza\n",
 	  "Wha\n",
 	  "Wh\r\n",

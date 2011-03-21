@@ -1,21 +1,27 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 2.6)
+enable_testing()
 
-ENABLE_TESTING()
+add_test(FunkyUrls ${CMAKE_SOURCE_DIR}/tests/funky_urls aze)
+add_test(HugeReq ${CMAKE_SOURCE_DIR}/tests/huge_req)
+add_test(Nominal ${CMAKE_SOURCE_DIR}/tests/typical_ab)
+add_test(HugeFile ${CMAKE_SOURCE_DIR}/tests/huge_ab)
+add_test(Test404 ${CMAKE_SOURCE_DIR}/tests/404_ab)
+add_test(Test403 ${CMAKE_SOURCE_DIR}/tests/403_ab)
 
-ADD_TEST(FunkyUrls ${CMAKE_SOURCE_DIR}/tests/funky_urls aze)
-ADD_TEST(HugeReq ${CMAKE_SOURCE_DIR}/tests/huge_req)
-ADD_TEST(Nominal ${CMAKE_SOURCE_DIR}/tests/typical_ab)
-ADD_TEST(HugeFile ${CMAKE_SOURCE_DIR}/tests/huge_ab)
-ADD_TEST(Test404 ${CMAKE_SOURCE_DIR}/tests/404_ab)
-ADD_TEST(Test403 ${CMAKE_SOURCE_DIR}/tests/403_ab)
+include_directories(include)
 
-ADD_EXECUTABLE(little little.c requests.c)
+add_executable(little src/little.c src/requests.c
+		      src/log.c src/hash.c src/str.c
+		      src/http.c src/handler.c)
+add_executable(hash_test src/hash_test.c src/hash.c)
 
-OPTION(PROFILE ON)
-IF(PROFILE)
-	SET(PROF_OPT "-fprofile-arcs -ftest-coverage")
-	TARGET_LINK_LIBRARIES(little gcov)	
-ENDIF(PROFILE)
+add_test(utest_hash ${CMAKE_BINARY_DIR}/hash_test)
 
-TARGET_LINK_LIBRARIES(little pthread ev)
-ADD_DEFINITIONS(-Wall -Wextra -g -O0 ${PROF_OPT})
+option(PROFILE ON)
+if(PROFILE)
+	set(PROF_OPT "-fprofile-arcs -ftest-coverage")
+	target_link_libraries(little gcov)
+endif(PROFILE)
+
+target_link_libraries(little pthread ev)
+add_definitions(-D_GNU_SOURCE -Wall -Wextra -g -O0 ${PROF_OPT})
