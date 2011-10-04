@@ -9,7 +9,7 @@ typedef int (*hash_cmp_fn)(void *, void *);
 
 struct hash;
 struct hash *hash_new(unsigned int size, hash_hashing_fn hash, hash_cmp_fn cmp);
-void *hash_put(struct hash *h, void *e);
+void *hash_put(struct hash *h, void *k);
 void *hash_get(struct hash *h, void *k);
 void hash_free(struct hash *h, void (*free_fn)(void *));
 

@@ -5,19 +5,19 @@
 #include <string.h>
 
 static FILE *log_file;
-enum log_level log_level;
+static enum log_level cur_log_level;
 
 void log_init(void)
 {
 	log_file = stderr;
-	log_level = INFO;
+	cur_log_level = INFO;
 }
 
 void logm(enum log_level ll, enum log_flags f, char *fmt, ...)
 {
 	va_list a;
 
-	if (ll < log_level)
+	if (ll < cur_log_level)
 		return;
 
 	va_start(a, fmt);

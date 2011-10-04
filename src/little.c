@@ -109,6 +109,31 @@ out:
 	return path;
 }
 
+static char *unescape_url(const char *u, unsigned int len)
+{
+	unsigned int i, j;
+	char *out;
+
+	out = malloc(len * 3);
+	for (i = 0, j = 0; i < len && u[i]; i++, j++) {
+		if (u[i] == '%') {
+			if (i + 2 < len) {
+				char val;
+				char hex[3] = { u[i + 1], u[i + 2], '\0' };
+				val = (char)strtol(hex, NULL, 16);
+				i += 2;
+				out[j] = val;
+				continue;
+			}
+		} else {
+			out[j] = u[i];
+		}
+	}
+	out[j] = '\0';
+
+	return out;
+}
+
 /**
  * @brief Given a request, examine it's contents and try to parse the URL
  *
@@ -142,14 +167,11 @@ static char *parse_url(struct request *req)
 		if (p[i] == '\r' || p[i] == '\n' || p[i] == ' ')
 			break;
 	}
-	url = malloc(i + 1);
+	url = unescape_url(p, i);
 	if (!url) {
 		req->response.http_code = Internal_Server_Error;
 		return NULL;
 	}
-
-	memcpy(url, p, i);
-	url[i] = '\0';
 
 	return url;
 }
@@ -226,6 +248,7 @@ static int open_local_file(struct request *req, const char *path)
 	ret = fstat(req->fs_fd, &st);
 	if (ret < 0)
 		goto err;
+
 	if (S_ISDIR(st.st_mode)) {
 		handler_priv->resp_type = LOCAL_DIR;
 		return 1;
@@ -253,24 +276,29 @@ int file_handler_main(struct request *req)
 	int ret;
 	struct file_handler_priv *handler_priv;
 
-	req->priv = malloc(sizeof(struct file_handler_priv));
-	if (!req->priv)
-		return -1;
+	/* First run */
+	if (!req->priv) {
+		req->priv = calloc(1, sizeof(struct file_handler_priv));
+		if (!req->priv)
+			return -1;
+
+		path = url_to_path(string_charstar(req->url));
+
+		if (!open_local_file(req, path)) {
+			req->response.status = build_status_line(req->response.http_code);
+			req->handler = NULL;
+			return -1;
+		}
+
+		req->response.status = build_status_line(req->response.http_code);
+		if (req->response.http_code != OK) {
+			req->handler = NULL;
+			return -1;
+		}
+		write(req->net_fd, req->response.status.str, req->response.status.len);
+	}
 
 	handler_priv = req->priv;
-
-	path = url_to_path(string_charstar(req->url));
-
-	if (!open_local_file(req, path)) {
-		req->handler = NULL;
-		return -1;
-	}
-
-	req->response.status = build_status_line(req->response.http_code);
-	if (req->response.http_code != OK) {
-		req->handler = NULL;
-		return -1;
-	}
 
 	if (handler_priv->resp_type == LOCAL_FILE) {
 		ret = sendfile(req->net_fd, req->fs_fd, &req->fs_fd_offset, BUFSIZ);
@@ -459,7 +487,7 @@ static void process_new_client(int server, int poll_fd)
 		return;
 	}
 
-	req = malloc(sizeof(struct request));
+	req = calloc(1, sizeof(struct request));
 	if (!req) {
 		logm(ERROR, ERRNO, "malloc");
 		return;
@@ -476,17 +504,14 @@ static void process_new_client(int server, int poll_fd)
 	req_add(req);
 }
 
-struct extended_options {
-	struct option opt;
-	char *help;
-};
-
-void usage(char **argv, struct extended_options *o)
+void usage(char **argv, struct option *o, char **help)
 {
+	int i = 0;
+
 	fprintf(stderr, "Usage: %s\n", argv[0]);
-	while (o->help) {
-		fprintf(stderr, "\t--%-15s: %-30s\n", o->opt.name, o->help);
-		o++;
+	while (help[i]) {
+		fprintf(stderr, "\t--%-15s: %-30s\n", o[i].name, help[i]);
+		i++;
 	}
 }
 
@@ -496,16 +521,24 @@ int parse_cmdline(char **argv, int argc, struct configuration *config)
 
 	while (1) {
 		int option_index = 0;
-		struct extended_options long_options[] = {
-			{ { "port", 1, 0, 'p'}, 	"port to listen to" },
-			{ { "bind_address", 1, 0, 'b'},	"IP address to bind to" },
-			{ { "root_dir", 1, 0, 'r'}, 	"web server root dir" },
-			{ { "help", 0, 0, 'h'}, 	"this help" },
-			{ { 0, 0, 0, 0}, NULL }
+		char *help[] = {
+			"port to listen to",
+			"IP address to bind to",
+			"web server root dir",
+			"this help",
+			NULL
+		};
+		struct option long_options[] = {
+			{ "port", 1, 0, 'p'},
+			{ "bind_address", 1, 0, 'b'},
+			{ "root_dir", 1, 0, 'r'},
+			{ "help", 0, 0, 'h'},
 		};
 
+
+
 		c = getopt_long(argc, argv, "p:b:r:h",
-				(struct option *)long_options, &option_index);
+				long_options, &option_index);
 		if (c == -1)
 			break;
 
@@ -526,7 +559,7 @@ int parse_cmdline(char **argv, int argc, struct configuration *config)
 
 		case 'h':
 		default:
-			usage(argv, long_options);
+			usage(argv, long_options, help);
 			return -1;
 		}
 	}
@@ -638,7 +671,7 @@ int main(int argc, char **argv)
 				assert(req);
 
 				/* check the sanity of the file descriptor */
-				if (events[n].events & EPOLLERR || events[n].events & EPOLLHUP) {
+				if (events[n].events & (EPOLLERR | EPOLLHUP)) {
 					req_del(req->net_fd);
 					continue;
 				}

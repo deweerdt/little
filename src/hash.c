@@ -93,7 +93,7 @@ static int string_hash_cmp(void *a1, void *a2)
 {
 	struct string_hash_elem *e1 = a1;
 	struct string_hash_elem *e2 = a2;
-	
+
 	return strcmp(e1->key, e2->key);
 }
 
@@ -109,7 +109,7 @@ static uint32_t string_hash_hash(void *a)
 
 struct hash *string_hash_new(unsigned int size)
 {
-	return hash_new(size, string_hash_hash, string_hash_cmp);	
+	return hash_new(size, string_hash_hash, string_hash_cmp);
 }
 
 void *string_hash_put(struct hash *h, char *key, void *value)
@@ -147,5 +147,5 @@ static void string_hash_elem_free(void *e)
 
 void string_hash_free(struct hash *h)
 {
-	hash_free(h, string_hash_elem_free);	
+	hash_free(h, string_hash_elem_free);
 }
