@@ -10,7 +10,7 @@ static enum log_level cur_log_level;
 void log_init(void)
 {
 	log_file = stderr;
-	cur_log_level = INFO;
+	cur_log_level = WARN;
 }
 
 void logm(enum log_level ll, enum log_flags f, char *fmt, ...)

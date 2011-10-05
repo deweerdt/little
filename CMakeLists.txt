@@ -31,6 +31,11 @@ find_library(LIBEV_LIBRARY NAMES ev PATHS ${BREW_EV_LIB_PREFIX})
 find_path(LIBEV_INCLUDE_DIR ev.h
 	  PATH_SUFFIXES include/ev include ${BREW_EV_INC_PREFIX})
 
+if (NOT LIBEV_INCLUDE_DIR OR NOT LIBEV_LIBRARY)
+	message(FATAL_ERROR "Couldn't find libev header files or library")
+endif (NOT LIBEV_INCLUDE_DIR OR NOT LIBEV_LIBRARY)
+
+
 include_directories(include ${LIBEV_INCLUDE_DIR})
 
 target_link_libraries(little pthread ${LIBEV_LIBRARY})

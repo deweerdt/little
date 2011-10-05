@@ -303,7 +303,8 @@ int file_handler_main(struct request *req)
 			req->handler = NULL;
 			return -1;
 		}
-		ret = write(req->net_fd, req->response.status.str, req->response.status.len);
+		ret = send(req->net_fd, req->response.status.str, req->response.status.len,
+			   MSG_NOSIGNAL);
 		if (ret <= 0) {
 			goto del_fd;
 		}
@@ -319,7 +320,7 @@ int file_handler_main(struct request *req)
 			goto del_fd;
 		}
 
-		ret = write(req->net_fd, buf, ret);
+		ret = send(req->net_fd, buf, ret, MSG_NOSIGNAL);
 		if (ret <= 0) {
 			goto del_fd;
 		}
@@ -328,7 +329,7 @@ int file_handler_main(struct request *req)
 		struct dirent *dirent;
 
 		char dir_header[] = "<html><body>";
-		ret = write(req->net_fd, dir_header, sizeof(dir_header) - 1);
+		ret = send(req->net_fd, dir_header, sizeof(dir_header) - 1, MSG_NOSIGNAL);
 
 		handler_priv->dir = opendir(handler_priv->path);
 		if (!handler_priv->dir) {
@@ -350,12 +351,12 @@ int file_handler_main(struct request *req)
 				break;
 
 			len = sprintf(buf, "<a href=\"%s\">%s</a><br>", dirent->d_name, dirent->d_name);
-			ret = write(req->net_fd, buf, len);
+			ret = send(req->net_fd, buf, len, MSG_NOSIGNAL);
 		} while (handler_priv->dir && ret != -EAGAIN);
 
 		if (!dirent) {
 			char dir_footer[] = "</body></html>";
-			ret = write(req->net_fd, dir_footer, sizeof(dir_footer) - 1);
+			ret = send(req->net_fd, dir_footer, sizeof(dir_footer) - 1, MSG_NOSIGNAL);
 			if (ret == -EAGAIN)
 				return -1;
 			req_del(req->net_fd);
@@ -408,6 +409,8 @@ static void process_net_receiving(struct request *req)
 
 	ret = read(req->net_fd, req->request + req->request_size, BUFSIZ);
 	if (ret < 0) {
+		if (errno == EAGAIN)
+			return;
 		logm(ERROR, ERRNO, "read");
 		req_del(req->net_fd);
 		return;
@@ -448,6 +451,7 @@ static void process_net_receiving(struct request *req)
 
 		return;
 	} else {
+		abort();
 		/* not a request, continue */
 		req->request = realloc(req->request, req->request_size + BUFSIZ);
 		if (!req->request) {
@@ -470,7 +474,8 @@ static void process_net_sending(struct request *req)
 	if (req->handler) {
 		req->handler->main(req);
 	} else {
-		write(req->net_fd, req->response.status.str, req->response.status.len);
+		send(req->net_fd, req->response.status.str, req->response.status.len,
+		     MSG_NOSIGNAL);
 		req_del(req->net_fd);
 	}
 }
@@ -536,7 +541,6 @@ void req_cb(struct ev_loop *loop, struct ev_io *watcher, int events)
 	(void)events;
 
 	req = req_get_from_net_fd(watcher->fd);
-	//assert(req);
 	if (!req)
 		return;
 
@@ -645,8 +649,6 @@ int main(int argc, char **argv)
 		logm(ERROR, ERRNO, "Cannot init internal memory");
 		exit(1);
 	}
-
-	signal(SIGPIPE, SIG_IGN);
 
 	ret = pthread_create(&timethread, NULL, time_thread, NULL);
 	if (ret) {
