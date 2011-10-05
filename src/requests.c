@@ -30,7 +30,7 @@ void req_flush(struct request *req)
 
 char *req_addr_to_txt(struct request *req)
 {
-	static /* __thread */ char txt[256]; /* XXX: use pthread specific instead */
+	static /* __thread */ char txt[256]; /* XXX: fails on MacOS X, use pthread specific instead */
 	char addr_txt[256];
 	const char *res;
 
@@ -45,9 +45,6 @@ void req_del(int fd)
 {
 	logm(INFO, NONE, "<- connection: peer: [%s]", req_addr_to_txt(reqs[fd]));
 
-	if (reqs[fd]->fs_fd > 0) {
-		close(reqs[fd]->fs_fd);
-	}
 	if (reqs[fd]->handler
 	    && reqs[fd]->handler->cleanup) {
 		reqs[fd]->handler->cleanup(reqs[fd]);

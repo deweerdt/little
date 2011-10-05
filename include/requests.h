@@ -15,8 +15,6 @@ struct response {
 
 struct request {
 	int net_fd;				/* the socket file descriptor */
-	int fs_fd;				/* the local file associated with the request */
-	off_t fs_fd_offset;			/* the current local fs_fd offset */
 	struct ev_loop *loop;
 	uint8_t *request;			/* a buffer holding the recieved request */
 	unsigned int request_size;		/* the size of date hold by request */

@@ -231,6 +231,9 @@ enum resp_type {
 struct file_handler_priv {
 	enum resp_type resp_type;
 	DIR *dir;
+	int fs_fd;				/* the local file associated with the request */
+	off_t fs_fd_offset;			/* the current local fs_fd offset */
+	char *path;
 };
 
 static int open_local_file(struct request *req, const char *path)
@@ -245,12 +248,12 @@ static int open_local_file(struct request *req, const char *path)
 
 	handler_priv = req->priv;
 
-	req->fs_fd = open(path, O_RDONLY);
-	req->fs_fd_offset = 0;
-	if (req->fs_fd < 0)
+	handler_priv->fs_fd = open(path, O_RDONLY);
+	handler_priv->fs_fd_offset = 0;
+	if (handler_priv->fs_fd < 0)
 		goto err;
 
-	ret = fstat(req->fs_fd, &st);
+	ret = fstat(handler_priv->fs_fd, &st);
 	if (ret < 0)
 		goto err;
 
@@ -275,22 +278,8 @@ err:
 	return 0;
 }
 
-#if !defined(__linux__)
-/* Solaris function missing on Darwin.  Temporary workaround to allow building.
- * Ref http://mail.openjdk.java.net/pipermail/bsd-po...
- */
-static DIR* fake_fdopendir(int dfd)
-{
-	(void)dfd;
-	errno = ENOSYS;
-	return NULL;
-}
-#define fdopendir fake_fdopendir
-#endif
-
 int file_handler_main(struct request *req)
 {
-	char *path;
 	int ret;
 	struct file_handler_priv *handler_priv;
 
@@ -300,9 +289,10 @@ int file_handler_main(struct request *req)
 		if (!req->priv)
 			return -1;
 
-		path = url_to_path(string_charstar(req->url));
+		handler_priv = req->priv;
+		handler_priv->path = url_to_path(string_charstar(req->url));
 
-		if (!open_local_file(req, path)) {
+		if (!open_local_file(req, handler_priv->path)) {
 			req->response.status = build_status_line(req->response.http_code);
 			req->handler = NULL;
 			return -1;
@@ -323,10 +313,12 @@ int file_handler_main(struct request *req)
 
 	if (handler_priv->resp_type == LOCAL_FILE) {
 		char buf[BUFSIZ];
-		ret = read(req->fs_fd, buf, sizeof(buf));
+
+		ret = read(handler_priv->fs_fd, buf, sizeof(buf));
 		if (ret <= 0) {
 			goto del_fd;
 		}
+
 		ret = write(req->net_fd, buf, ret);
 		if (ret <= 0) {
 			goto del_fd;
@@ -336,14 +328,15 @@ int file_handler_main(struct request *req)
 		struct dirent *dirent;
 
 		char dir_header[] = "<html><body>";
-		ret = write(req->net_fd, dir_header, sizeof(dir_header));
+		ret = write(req->net_fd, dir_header, sizeof(dir_header) - 1);
 
-		handler_priv->dir = fdopendir(req->fs_fd);
+		handler_priv->dir = opendir(handler_priv->path);
 		if (!handler_priv->dir) {
 			req->response.http_code = Internal_Server_Error;
 			req->handler = NULL;
 			return -1;
 		}
+
 		/* if write was blocking, retry later */
 		if (ret == -EAGAIN)
 			return -1;
@@ -359,9 +352,10 @@ int file_handler_main(struct request *req)
 			len = sprintf(buf, "<a href=\"%s\">%s</a><br>", dirent->d_name, dirent->d_name);
 			ret = write(req->net_fd, buf, len);
 		} while (handler_priv->dir && ret != -EAGAIN);
+
 		if (!dirent) {
 			char dir_footer[] = "</body></html>";
-			ret = write(req->net_fd, dir_footer, sizeof(dir_footer));
+			ret = write(req->net_fd, dir_footer, sizeof(dir_footer) - 1);
 			if (ret == -EAGAIN)
 				return -1;
 			req_del(req->net_fd);
@@ -380,8 +374,13 @@ void file_handler_cleanup(struct request *req)
 	if (!handler_priv)
 		return;
 
-	if (handler_priv->dir)
+	if (handler_priv->dir) {
 		closedir(handler_priv->dir);
+	}
+
+	if (handler_priv->fs_fd > 0) {
+		close(handler_priv->fs_fd);
+	}
 }
 
 struct handler file_handler = {
@@ -460,35 +459,6 @@ static void process_net_receiving(struct request *req)
 }
 
 /**
- * @brief state == NET_SENDING_STATUS process:
- * Send the header corresponding to the http_code
- *
- * @param req the request being serviced
- **/
-#if 0
-static void process_net_sending_status(struct request *req)
-{
-	int size, ret;
-	const char *status;
-	status = build_status_line(req->http_code, &size);
-	ret = write(req->net_fd, status, size);
-	if (ret < 0) {
-		perror("write");
-		req_del(req->net_fd);
-		return;
-	}
-	if (req->http_code != OK) {
-		req_del(req->net_fd);
-		return;
-	}
-
-	if (!state_to(req, NET_SENDING))
-		req_del(req->net_fd);
-
-}
-#endif
-
-/**
  * @brief state == NET_SENDING process: read the local file and send it
  * over the socket
  *
@@ -544,7 +514,6 @@ static void process_new_client(struct ev_loop *loop, int server)
 		return;
 	}
 	req->net_fd = client;
-	req->fs_fd = 0;
 	req->loop = loop;
 	req->state = NET_RECEIVING;
 	req->request = malloc(BUFSIZ);
