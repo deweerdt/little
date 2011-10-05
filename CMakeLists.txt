@@ -8,8 +8,6 @@ add_test(HugeFile ${CMAKE_SOURCE_DIR}/tests/huge_ab)
 add_test(Test404 ${CMAKE_SOURCE_DIR}/tests/404_ab)
 add_test(Test403 ${CMAKE_SOURCE_DIR}/tests/403_ab)
 
-include_directories(include)
-
 add_executable(little src/little.c src/requests.c
 		      src/log.c src/hash.c src/str.c
 		      src/http.c src/handler.c)
@@ -23,5 +21,17 @@ if(PROFILE)
 	target_link_libraries(little gcov)
 endif(PROFILE)
 
-target_link_libraries(little pthread ev)
+if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+	execute_process(COMMAND "brew --prefix libev" RESULT_VARIABLE EV_PREFIX)
+	set(BREW_EV_INC_PREFIX "${EV_PREFIX}/include")
+	set(BREW_EV_LIB_PREFIX "${EV_PREFIX}/lib")
+endif (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+
+find_library(LIBEV_LIBRARY NAMES ev PATHS ${BREW_EV_LIB_PREFIX})
+find_path(LIBEV_INCLUDE_DIR ev.h
+	  PATH_SUFFIXES include/ev include ${BREW_EV_INC_PREFIX})
+
+include_directories(include ${LIBEV_INCLUDE_DIR})
+
+target_link_libraries(little pthread ${LIBEV_LIBRARY})
 add_definitions(-D_GNU_SOURCE -Wall -Wextra -g -O0 ${PROF_OPT})
