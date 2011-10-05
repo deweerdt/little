@@ -25,7 +25,8 @@ void logm(enum log_level ll, enum log_flags f, char *fmt, ...)
 	va_end(a);
 	if (f & ERRNO) {
 		char buf[256];
-		fprintf(log_file, " errno=\"%s\"", strerror_r(errno, buf, sizeof(buf)));
+		strerror_r(errno, buf, sizeof(buf));
+		fprintf(log_file, " errno=\"%s\"", buf);
 	}
 	fputc('\n', log_file);
 }

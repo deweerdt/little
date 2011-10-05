@@ -6,6 +6,9 @@
 #define CRLF "\r\n"
 #define CRLF_LEN 2
 
+#define CRLF_CRLF CRLF CRLF
+#define CRLF_CRLF_LEN (CRLF_LEN * 2)
+
 enum http_response_code {
 	OK = 200,
 	Created = 201,

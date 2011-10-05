@@ -23,5 +23,5 @@ if(PROFILE)
 	target_link_libraries(little gcov)
 endif(PROFILE)
 
-target_link_libraries(little pthread)
+target_link_libraries(little pthread ev)
 add_definitions(-D_GNU_SOURCE -Wall -Wextra -g -O0 ${PROF_OPT})

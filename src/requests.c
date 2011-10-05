@@ -30,7 +30,7 @@ void req_flush(struct request *req)
 
 char *req_addr_to_txt(struct request *req)
 {
-	static __thread char txt[256];
+	static /* __thread */ char txt[256]; /* XXX: use pthread specific instead */
 	char addr_txt[256];
 	const char *res;
 

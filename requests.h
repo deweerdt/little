@@ -5,28 +5,19 @@
 #include <dirent.h>
 #include <stdint.h>
 #include <ev.h>
-#include <netinet/in.h>
-#include "str.h"
-
-struct response {
-	enum http_response_code http_code; 	/* the http response code */
-	struct string status;
-};
 
 struct request {
-	int net_fd;				/* the socket file descriptor */
-	int fs_fd;				/* the local file associated with the request */
-	off_t fs_fd_offset;			/* the current local fs_fd offset */
+	int net_fd; 			/* the socket file descriptor */
+	int fs_fd;  			/* the local file associated with the request */
+	DIR *dir;			/* If the request is a DIR */
+	off_t fs_fd_offset; 		/* the current local fs_fd offset */
+	uint8_t *request;		/* a buffer holding the recieved request */
+	unsigned int request_size;	/* the size of date hold by request */
 	struct ev_loop *loop;
-	uint8_t *request;			/* a buffer holding the recieved request */
-	unsigned int request_size;		/* the size of date hold by request */
-	enum req_state state;			/* the state of the request */
-	time_t last_accessed;			/* last time said socket was accessed */
-	struct sockaddr_in peer_addr;		/* peer's address */
-	struct response response;
-	struct string *url;
-	struct handler *handler;
-	void *priv;
+	enum req_state state;		/* the state of the request */
+	time_t last_accessed; 		/* last time said socket was accessed */
+	enum http_response_code http_code; /* the http response code */
+	enum resp_type resp_type; 	/* the type of the response (file, dir) */
 };
 
 /**
@@ -36,12 +27,11 @@ struct request {
  **/
 int req_init(void);
 
-void req_flush(struct request *req);
 /**
  * @brief Close the sockets that have been inactive for @timeout seconds
  *
- * @param now the time elapsed since the EPOCH in seconds
- * @param timeout the timeout value in seconds
+ * @param now the time elapsed since the EPOCH in seconds 
+ * @param timeout the timeout value in seconds 
  **/
 void req_garbage_collect(time_t now, int timeout);
 
@@ -62,9 +52,9 @@ void req_add(struct request *req);
 
 /**
  * @brief Given @fd, find the associated struct request, holding the
- *	  state information
+ * 	  state information
  *
- * @param fd the net socket associated with the request
+ * @param fd the net socket associated with the request 
  *
  * @return the struct request corresponding to the socket fd, or NULL
  *         if not found
